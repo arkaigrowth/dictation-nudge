@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Built launcher app
+launcher/build/
+*.app
+*.icns
+*.iconset/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Agent / tooling droppings
+.claude/
