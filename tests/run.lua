@@ -369,6 +369,10 @@ test("malformed card messages do nothing", function()
     "snooze", 42, {}, { action = "snooze" }, { action = "snooze", minutes = "10" },
     { action = "snooze", minutes = 0 }, { action = "snooze", minutes = 100000 },
     { action = "set" }, { action = "set", value = {} }, { action = "nonsense" },
+    { action = "snooze", text = 90 }, { action = "snooze", text = {} },
+    { action = "setGate" }, { action = "setGate", value = "2" }, { action = "setGate", value = 2.5 },
+    { action = "setGate", value = 11 }, { action = "gateAnswer" }, { action = "gateAnswer", value = "12" },
+    { action = "gateAnswer", value = {} }, { action = "gateCancel" },
   }) do
     env.cardMessage(body)
   end
@@ -405,6 +409,445 @@ test("threshold Never (-1): no tracking, no nudge", function()
   eq(env.type(400, STEP), 0, "nothing consumed")
   near(env.used(), 0, "nothing spent")
   eq(#env.alerts, 0, "no banner")
+end)
+
+-- ═══ Snooze gate ═══
+
+local function isSnoozed() return _G.dictationNudgeSnoozeUntil ~= nil end
+
+-- Answer the problem that is showing, the way a person would type it.
+local function answerCurrent(env)
+  local gate = env.internal.gate()
+  env.cardMessage({ action = "gateAnswer", value = string.format("%d", gate.problems[gate.index].answer) })
+end
+
+local function lastScript(env)
+  local scripts = env.panels[#env.panels].scripts
+  return scripts[#scripts]
+end
+
+test("gate off (the default): snooze and disable are immediate", function()
+  local env = load()
+  eq(env.internal.config.snoozeMathProblems, 0, "default count")
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  assert(isSnoozed(), "snoozed at once")
+  eq(env.internal.gate(), nil, "no challenge")
+  eq(env.openPanels(), 0, "card closed")
+end)
+
+test("gate on: snooze starts only after every problem is answered correctly", function()
+  local env = load({ snoozeMathProblems = 2 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 45 })
+  assert(not isSnoozed(), "not snoozed yet")
+  eq(env.openPanels(), 1, "card stays open for the challenge")
+  local gate = env.internal.gate()
+  eq(#gate.problems, 2, "problem count")
+  eq(gate.index, 1, "starts on the first problem")
+  assert(lastScript(env):find("showGate({", 1, true), "challenge pushed to the card")
+  assert(lastScript(env):find('"title":"Solve 2 to snooze 45m"', 1, true), "title names the goal: " .. lastScript(env))
+  assert(lastScript(env):find('"question":"' .. gate.problems[1].question .. '"', 1, true), "first question shown")
+  for key in lastScript(env):gmatch('"(%w+)":') do
+    assert(key ~= "answer" and key ~= "hint" and key ~= "problems", "view leaks " .. key)
+  end
+
+  env.cardMessage({ action = "gateAnswer", value = string.format("%d", gate.problems[1].answer + 1) })
+  assert(not isSnoozed(), "a wrong answer does not snooze")
+  eq(env.internal.gate().index, 1, "still on problem 1")
+  eq(env.internal.gate().misses, 1, "miss counted")
+  assert(lastScript(env):find("Not quite. " .. gate.problems[1].hint, 1, true), "hint shown after a miss")
+  assert(lastScript(env):find('"wrong":true', 1, true), "marked wrong")
+
+  env.cardMessage({ action = "gateAnswer", value = "about nine" })
+  eq(env.internal.gate().misses, 1, "non-numbers are not a miss")
+  assert(lastScript(env):find("Type a number", 1, true), "asks for a number")
+
+  answerCurrent(env)
+  assert(not isSnoozed(), "one of two is not enough")
+  eq(env.internal.gate().index, 2, "moved to problem 2")
+  assert(lastScript(env):find('"question":"' .. gate.problems[2].question .. '"', 1, true), "second question shown")
+
+  answerCurrent(env)
+  assert(isSnoozed(), "snoozed after the last correct answer")
+  near(_G.dictationNudgeSnoozeUntil - env.now, 45 * 60, "for the requested length")
+  eq(env.settings["dictationNudge.snoozeMinutes"], 45, "snooze length remembered")
+  eq(env.internal.gate(), nil, "challenge cleared")
+  eq(env.openPanels(), 0, "card closed")
+end)
+
+test("gate on: formatted answers are accepted", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 5 })
+  local answer = env.internal.gate().problems[1].answer
+  env.cardMessage({ action = "gateAnswer", value = " $" .. string.format("%d", answer) .. ".00 " })
+  assert(isSnoozed(), "snoozed")
+end)
+
+test("gate on: Never mind and Esc drop the snooze", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  env.cardMessage({ action = "gateCancel" })
+  eq(env.internal.gate(), nil, "challenge gone")
+  eq(env.openPanels(), 1, "card stays open")
+  assert(lastScript(env):find("showGate(null)", 1, true), "card told to hide the challenge")
+  assert(not isSnoozed(), "not snoozed")
+  env.cardMessage({ action = "gateAnswer", value = "1" }) -- stale answer after cancelling
+  assert(not isSnoozed(), "a stale answer does nothing")
+
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  assert(env.internal.gate(), "challenge showing again")
+  eq(env.key("escape"), true, "Esc consumed")
+  eq(env.internal.gate(), nil, "Esc drops the challenge")
+  eq(env.openPanels(), 0, "card closed")
+  assert(not isSnoozed(), "not snoozed")
+end)
+
+test("gate on: Disable is gated, Enable is not", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "disable" })
+  eq(_G.dictationNudgeDisabled, false, "not disabled yet")
+  assert(lastScript(env):find('"title":"Solve 1 to disable the nudge"', 1, true), "title names the goal")
+  answerCurrent(env)
+  eq(_G.dictationNudgeDisabled, true, "disabled after solving")
+  eq(env.openPanels(), 0, "card closed")
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "disable" }) -- the button now reads Enable
+  eq(_G.dictationNudgeDisabled, false, "enabled at once")
+  eq(env.internal.gate(), nil, "no challenge to turn it back on")
+end)
+
+test("gate on: ending a snooze is never gated", function()
+  local env = load({ snoozeMathProblems = 3 })
+  _G.dictationNudgeSnoozeUntil = env.now + 600
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "unsnooze" })
+  assert(not isSnoozed(), "card ✕ ends the snooze")
+  eq(env.internal.gate(), nil, "no challenge")
+  _G.dictationNudgeSnoozeUntil = env.now + 600
+  env.urlBinds["dictationNudgeSnooze"]()
+  assert(not isSnoozed(), "URL toggle ends the snooze")
+  eq(env.internal.gate(), nil, "no challenge")
+end)
+
+test("gate on: the snooze URL event opens the card straight into the challenge", function()
+  local env = load({ snoozeMathProblems = 2 })
+  env.urlBinds["dictationNudgeSnooze"]()
+  assert(not isSnoozed(), "not snoozed")
+  eq(env.openPanels(), 1, "card opened")
+  local gate = env.internal.gate()
+  eq(#gate.problems, 2, "challenge ready")
+  local html = env.panels[#env.panels].html
+  assert(html:find('showGate({', 1, true) and html:find('"question":"' .. gate.problems[1].question .. '"', 1, true),
+    "first problem is in the page it opens with")
+  assert(not html:find("__%u+__"), "no unreplaced placeholders")
+  answerCurrent(env); answerCurrent(env)
+  assert(isSnoozed(), "snoozed after solving")
+  near(_G.dictationNudgeSnoozeUntil - env.now, 30 * 60, "default snooze length")
+
+  local off = load()
+  off.urlBinds["dictationNudgeSnooze"]()
+  assert(isSnoozed(), "gate off: URL event snoozes at once")
+  eq(off.openPanels(), 0, "and opens no card")
+end)
+
+test("gate on: answer keys spend nothing while a problem shows; letters still count", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  for _, name in ipairs({ "4", "5", ".", ",", "-", "delete", "return", "pad7", "padenter" }) do
+    eq(env.type(9, STEP, name), 0, name .. " passes through")
+    near(env.used(), 0, name .. " spends nothing during a challenge")
+  end
+  env.type(9, STEP, "a")
+  near(env.used(), 1.0, "letters still spend during a challenge")
+  env.cardMessage({ action = "gateCancel" })
+  env.advance(60) -- refill
+  env.type(9, STEP, "5")
+  near(env.used(), 1.0, "digits count again once the challenge is gone")
+end)
+
+test("gate on: typing an answer refills the allowance like a pause", function()
+  local env = load({ snoozeMathProblems = 1 })
+  env.type(17, STEP, "a")      -- 2.0s used before the challenge
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  env.advance(STEP)
+  env.type(8, STEP, "7")       -- one second of digits: 0.25s hold, then 0.75s of refill
+  near(env.used(), 1.25, "digits do not reset the pause")
+end)
+
+test("gate on: a fresh nudge card drops an unfinished challenge", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  assert(env.internal.gate(), "challenge showing")
+  env.type(121, STEP) -- uses the whole 15s allowance: tier 1 fires and reopens the card
+  eq(env.internal.gate(), nil, "challenge dropped")
+  assert(not isSnoozed(), "not snoozed")
+  local html = env.panels[#env.panels].html
+  assert(html:find("showGate(null)", 1, true), "the new card opens without a challenge")
+end)
+
+test("gate on: picking a second snooze length mid-challenge keeps the same problems", function()
+  local env = load({ snoozeMathProblems = 2 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  local first = env.internal.gate().problems[1].question
+  answerCurrent(env)
+  env.cardMessage({ action = "snooze", minutes = 20 }) -- e.g. a second URL event
+  eq(env.internal.gate().problems[1].question, first, "problems not redrawn")
+  eq(env.internal.gate().index, 2, "progress kept")
+  answerCurrent(env)
+  near(_G.dictationNudgeSnoozeUntil - env.now, 20 * 60, "latest request wins")
+end)
+
+test("the problem count sets how many problems; start() rejects a bad count", function()
+  for _, count in ipairs({ 1, 3, 10 }) do
+    local env = load({ snoozeMathProblems = count })
+    _G.dictationNudgeSettings()
+    env.cardMessage({ action = "snooze", minutes = 10 })
+    eq(#env.internal.gate().problems, count, "problems for count " .. count)
+  end
+  local module = load().module
+  for _, bad in ipairs({ 11, 99, 2.5, -1, "3", 0 / 0, true }) do
+    local ok, err = pcall(module.start, { snoozeMathProblems = bad })
+    eq(ok, false, "rejected: " .. tostring(bad))
+    assert(tostring(err):find("snoozeMathProblems", 1, true), "error names the option: " .. tostring(err))
+  end
+  local ok, err = pcall(module.start, { snoozeMathSettingsKey = "" })
+  eq(ok, false, "empty settings key rejected")
+end)
+
+test("the card sets the problem count; bad values are ignored; the saved value wins", function()
+  local env = load()
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "setGate", value = 3 })
+  eq(env.internal.config.snoozeMathProblems, 3, "count set")
+  eq(env.settings["dictationNudge.snoozeMathProblems"], 3, "count saved")
+  for _, bad in ipairs({ -1, 1.5, 11, "2", 0 / 0 }) do
+    env.cardMessage({ action = "setGate", value = bad })
+    eq(env.internal.config.snoozeMathProblems, 3, "bad value ignored: " .. tostring(bad))
+  end
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  env.cardMessage({ action = "setGate", value = 0 })
+  eq(env.internal.config.snoozeMathProblems, 3, "cannot be switched off from inside a challenge")
+  env.cardMessage({ action = "gateCancel" })
+  env.cardMessage({ action = "setGate", value = 0 })
+  eq(env.internal.config.snoozeMathProblems, 0, "switched off from the card")
+  local saved = load({ snoozeMathProblems = 1 }, { ["dictationNudge.snoozeMathProblems"] = 5 })
+  eq(saved.internal.config.snoozeMathProblems, 5, "saved count wins over config")
+  local junk = load({ snoozeMathProblems = 1 }, { ["dictationNudge.snoozeMathProblems"] = 400 })
+  eq(junk.internal.config.snoozeMathProblems, 1, "out-of-range saved count ignored")
+end)
+
+test("the card shows the current count, including one set in config", function()
+  local env = load({ snoozeMathProblems = 4 })
+  _G.dictationNudgeSettings()
+  assert(env.panels[1].html:find("var mathCount=4,", 1, true), "count reaches the card")
+  assert(_G.dictationNudgeStatus():find("snoozeMath=4", 1, true), "status shows it")
+  assert(load().module and _G.dictationNudgeStatus():find("snoozeMath=off", 1, true), "status shows off")
+end)
+
+-- ═══ Custom snooze lengths ═══
+
+test("typed snooze lengths: minutes and hours in the usual spellings", function()
+  local parse = load().internal.parseSnoozeLength
+  local good = {
+    ["90"] = 90, ["45m"] = 45, ["45 m"] = 45, ["90 mins"] = 90, ["1 minute"] = 1, ["20 minutes"] = 20, ["5 min"] = 5,
+    ["2h"] = 120, ["2 h"] = 120, ["1 hour"] = 60, ["3 hours"] = 180, ["2 hrs"] = 120, ["1hr"] = 60,
+    ["1.5h"] = 90, ["1.5 hours"] = 90, ["0.5h"] = 30, [".5h"] = 30, ["0.25 hours"] = 15, ["0.1h"] = 6,
+    ["1h30"] = 90, ["1h 30"] = 90, ["1h30m"] = 90, ["1h 30m"] = 90, ["1 hr, 15 min"] = 75,
+    ["1 hour 30 minutes"] = 90, ["1 hour and 30 minutes"] = 90, ["2 hours and 5 minutes"] = 125,
+    ["1:30"] = 90, ["0:45"] = 45, ["12:00"] = 720,
+    ["an hour"] = 60, ["a minute"] = 1, ["half an hour"] = 30, ["half hour"] = 30,
+    ["an hour and a half"] = 90, ["2 and a half hours"] = 150, ["2 hours and a half"] = 150,
+    ["  1H   30M  "] = 90, ["12h"] = 720, ["720"] = 720, ["1"] = 1,
+  }
+  for text, minutes in pairs(good) do
+    local got, reason = parse(text)
+    eq(got, minutes, "'" .. text .. "' (" .. tostring(reason) .. ")")
+  end
+end)
+
+test("typed snooze lengths: days and longer are refused, and so is anything unclear", function()
+  local parse = load().internal.parseSnoozeLength
+  local unitsOnly = "Minutes and hours only."
+  for _, text in ipairs({ "2d", "2 days", "1 day", "1 week", "3 weeks", "1 month", "2 months", "1 year",
+    "1h 2d", "1 day 2 hours", "30s", "90 seconds", "day", "month" }) do
+    local got, reason = parse(text)
+    eq(got, nil, "'" .. text .. "' refused")
+    eq(reason, unitsOnly, "'" .. text .. "' reason")
+  end
+  local help = "Try 45m, 1.5h, or 1h 30m."
+  for _, text in ipairs({ "", "   ", "soon", "tomorrow", "h", "m", "-5", "1e3", "1h 1h", "30m 1h", "30m 15",
+    "1h30m15", "30 1h", "1:5", "1:75", "1:30:00", "1,5h", "ninety", "30m and a half", "and a half", "1 lightyear" }) do
+    local got, reason = parse(text)
+    eq(got, nil, "'" .. text .. "' refused")
+    eq(reason, help, "'" .. text .. "' reason")
+  end
+  for _, text in ipairs({ "0", "0m", "0h", "721", "12h1m", "13h", "9999", "12:01" }) do
+    local got, reason = parse(text)
+    eq(got, nil, "'" .. text .. "' refused")
+    eq(reason, "Snooze can be 1 minute to 12 hours.", "'" .. text .. "' reason")
+  end
+  for _, text in ipairs({ "1.5", "1.5m", "0.01h", "1.33 hours" }) do
+    local got, reason = parse(text)
+    eq(got, nil, "'" .. text .. "' refused")
+    eq(reason, "Use a whole number of minutes.", "'" .. text .. "' reason")
+  end
+  for _, value in ipairs({ 90, true, {} }) do eq(parse(value), nil, "non-string refused") end
+  eq(parse(nil), nil, "nil refused")
+end)
+
+test("the card's typed snooze length snoozes, or explains why not", function()
+  local env = load()
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", text = "3 days" })
+  assert(not isSnoozed(), "days do not snooze")
+  eq(env.openPanels(), 1, "card stays open")
+  assert(lastScript(env):find('snoozeError({"message":"Minutes and hours only."})', 1, true), "reason sent to the card: " .. lastScript(env))
+  env.cardMessage({ action = "snooze", text = "1h 30m" })
+  assert(isSnoozed(), "snoozed")
+  near(_G.dictationNudgeSnoozeUntil - env.now, 90 * 60, "for 90 minutes")
+  eq(env.settings["dictationNudge.snoozeMinutes"], 90, "remembered as the default")
+  eq(env.openPanels(), 0, "card closed")
+
+  local gated = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  gated.cardMessage({ action = "snooze", text = "2 hours" })
+  assert(not isSnoozed(), "typed lengths go through the gate too")
+  assert(lastScript(gated):find('"title":"Solve 1 to snooze 2h"', 1, true), "gate names the typed length")
+  answerCurrent(gated)
+  near(_G.dictationNudgeSnoozeUntil - gated.now, 120 * 60, "for two hours")
+end)
+
+-- ═══ Money math bank ═══
+
+-- A pick() that returns list[index] for each queued index, in order.
+local function scripted(indices)
+  local position = 0
+  return function(list)
+    position = position + 1
+    assert(indices[position], "script ran out of picks")
+    return list[indices[position]]
+  end
+end
+
+test("money math: one hand-worked case per template", function()
+  local bank = load().internal.moneyMath
+  local byName = {}
+  for _, template in ipairs(bank.TEMPLATES) do byName[template.name] = template end
+  -- { template, picks, answer worked by hand, what it is }
+  local golden = {
+    { "tip",                { 3, 2 },    9,       "15% of $60" },
+    { "discount",           { 3, 3 },    60,      "$80 less 25%" },
+    { "sales_tax",          { 2, 2 },    44,      "$40 plus 10%" },
+    { "percent_change",     { 4, 3, 1 }, 25,      "$80 to $100" },
+    { "percent_change",     { 4, 3, 2 }, 25,      "$80 to $60" },
+    { "rule_of_72",         { 5, 1 },    9,       "72 / 8" },
+    { "rule_of_72",         { 4, 2 },    6,       "double in 12 years" },
+    { "card_interest",      { 2, 3 },    40,      "$2,000 at 24% APR for a month" },
+    { "card_interest",      { 1, 2 },    15,      "$1,000 at 18% APR for a month" },
+    { "subscription_year",  { 5 },       180,     "$15 x 12" },
+    { "daily_habit",        { 3, 2 },    1500,    "$6 x 5 x 50" },
+    { "hourly_salary",      { 1, 5 },    80000,   "$40 x 2,000" },
+    { "hourly_salary",      { 2, 4 },    45,      "$90,000 / 2,000" },
+    { "savings_rate",       { 2, 3 },    15,      "$750 of $5,000" },
+    { "split_with_tip",     { 3, 3 },    24,      "$80 + 20% = $96, / 4" },
+    { "four_percent_rule",  { 2, 1 },    1000000, "$40,000 x 25" },
+    { "four_percent_rule",  { 2, 2 },    40000,   "4% of $1,000,000" },
+    { "employer_match",     { 2, 2 },    2400,    "4% of $60,000" },
+    { "compound_two_years", { 1, 1 },    1210,    "$1,000 at 10%, twice" },
+    { "compound_two_years", { 1, 2 },    1440,    "$1,000 at 20%, twice" },
+    { "profit_margin",      { 4, 2 },    20,      "cost $80, sale $100" },
+    { "runway",             { 3, 2 },    6,       "$24,000 at $4,000 a month" },
+    { "payback",            { 3, 4 },    12,      "$300 at $25 a month" },
+    { "fee_drag",           { 3, 1 },    2000,    "1% of $200,000" },
+    { "drawdown_recovery",  { 2 },       100,     "down 50%: $50 back to $100" },
+    { "drawdown_recovery",  { 1 },       25,      "down 20%: $80 back to $100" },
+    { "drawdown_recovery",  { 4 },       300,     "down 75%: $25 back to $100" },
+    { "real_return",        { 3, 2 },    4,       "7% less 3%" },
+    { "tax_set_aside",      { 3, 2 },    1200,    "30% of $4,000" },
+    { "tax_set_aside",      { 3, 1 },    1000,    "25% of $4,000" },
+    { "raise_after_tax",    { 2, 2 },    7600,    "$10,000 less 24%" },
+    { "down_payment",       { 3, 3 },    80000,   "20% of $400,000" },
+  }
+  local covered = {}
+  for _, case in ipairs(golden) do
+    local question, answer, hint = byName[case[1]].make(scripted(case[2]))
+    covered[case[1]] = true
+    eq(answer, case[3], case[1] .. " (" .. case[4] .. "): " .. question)
+    assert(type(hint) == "string" and #hint > 0, case[1] .. ": hint missing")
+  end
+  for _, template in ipairs(bank.TEMPLATES) do
+    assert(covered[template.name], template.name .. ": no hand-worked case")
+  end
+  eq((byName.split_with_tip.make(scripted({ 3, 3 }))),
+    "$80 dinner plus a 20% tip, split 4 ways. What does each person pay?", "wording")
+  eq((byName.percent_change.make(scripted({ 4, 3, 2 }))),
+    "A stock goes from $80 to $60. Percent drop?", "wording")
+end)
+
+test("money math: every possible problem has a positive whole-number answer", function()
+  local bank = load().internal.moneyMath
+  local combinations = 0
+  for _, template in ipairs(bank.TEMPLATES) do
+    -- Walk every combination of picks by replaying make() with longer prefixes.
+    local function walk(prefix)
+      local position = 0
+      local ok, question, answer, hint = pcall(template.make, function(list)
+        position = position + 1
+        if prefix[position] then return list[prefix[position]] end
+        error({ branch = #list })
+      end)
+      if not ok then
+        assert(type(question) == "table" and question.branch, tostring(question))
+        for choice = 1, question.branch do
+          local longer = { table.unpack(prefix) }
+          longer[#longer + 1] = choice
+          walk(longer)
+        end
+        return
+      end
+      combinations = combinations + 1
+      local where = template.name .. " {" .. table.concat(prefix, ",") .. "}: " .. question
+      assert(answer > 0 and answer == math.floor(answer), "answer not a positive whole number (" .. tostring(answer) .. "), " .. where)
+      for _, text in ipairs({ question, hint }) do
+        assert(not text:find("%f[%a]nan%f[%A]") and not text:find("%f[%a]inf%f[%A]"), "broken number, " .. where)
+      end
+      assert(not question:find("%d%.%d"), "fractional number in the question, " .. where)
+      assert(not (question .. hint):find("\226\128\148"), "em dash, " .. where)
+      assert(bank.isCorrect({ answer = answer }, string.format("%d", answer)), "own answer rejected, " .. where)
+      assert(not bank.isCorrect({ answer = answer }, string.format("%d", answer + 1)), "wrong answer accepted, " .. where)
+    end
+    walk({})
+  end
+  assert(combinations > 250, "enumerated " .. combinations .. " combinations")
+end)
+
+test("money math: a challenge never repeats a template; answers parse like a person types them", function()
+  local bank = load().internal.moneyMath
+  for count = 1, #bank.TEMPLATES do
+    local kinds = {}
+    for _, problem in ipairs(bank.newChallenge(count)) do
+      assert(not kinds[problem.kind], "repeated " .. problem.kind .. " in a challenge of " .. count)
+      kinds[problem.kind] = true
+    end
+  end
+  eq(#bank.newChallenge(#bank.TEMPLATES + 3), #bank.TEMPLATES + 3, "longer than the bank still fills")
+  for text, value in pairs({ ["9"] = 9, [" 9 "] = 9, ["$1,200"] = 1200, ["15%"] = 15, ["1210.00"] = 1210, ["$ 80,000"] = 80000 }) do
+    eq(bank.parseAnswer(text), value, "parse '" .. text .. "'")
+  end
+  for _, bad in ipairs({ "", "abc", "12abc", "1.2.3", "--4", "$", "nine", "1e3", "0x10" }) do
+    eq(bank.parseAnswer(bad), nil, "reject '" .. bad .. "'")
+  end
+  eq(bank.parseAnswer(nil), nil, "nil")
+  eq(bank.parseAnswer(42), nil, "a number is not typed text")
+  eq(bank.money(1200) .. bank.money(999) .. bank.money(1000000), "$1,200$999$1,000,000", "money formatting")
 end)
 
 -- ═══ Esc and pass-through ═══
@@ -498,19 +941,40 @@ test("a full run through both tiers logs fixed messages and leaks nothing", func
   eq(#env.apps, 0, "apps launched")
 end)
 
-test("only two preference keys are ever written", function()
+test("only three preference keys are ever written", function()
   local env = load()
   _G.dictationNudgeSettings()
   env.cardMessage({ action = "set", value = 30 })
+  env.cardMessage({ action = "setGate", value = 1 })
   env.cardMessage({ action = "snooze", minutes = 5 })
+  env.cardMessage({ action = "gateAnswer", value = "wrong" })
+  local gate = env.internal.gate()
+  env.cardMessage({ action = "gateAnswer", value = string.format("%d", gate.problems[1].answer) })
   env.type(300, STEP)
-  local allowed = { ["dictationNudge.nudgeAfterSeconds"] = true, ["dictationNudge.snoozeMinutes"] = true }
+  local allowed = {
+    ["dictationNudge.nudgeAfterSeconds"] = true, ["dictationNudge.snoozeMinutes"] = true,
+    ["dictationNudge.snoozeMathProblems"] = true,
+  }
   for _, key in ipairs(env.settingsWrites) do
     assert(allowed[key], "unexpected settings key: " .. tostring(key))
   end
-  eq(#env.settingsWrites, 2, "write count")
+  eq(#env.settingsWrites, 3, "write count")
   eq(env.settings["dictationNudge.nudgeAfterSeconds"], 30, "saved limit is the number that was set")
   eq(env.settings["dictationNudge.snoozeMinutes"], 5, "saved snooze is the number that was set")
+end)
+
+test("answers typed into a challenge are never logged or saved", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 5 })
+  local logsBefore, writesBefore = #env.logs, #env.settingsWrites
+  env.cardMessage({ action = "gateAnswer", value = "31337" })
+  env.cardMessage({ action = "gateAnswer", value = "not a number 424242" })
+  eq(#env.logs, logsBefore, "log lines")
+  eq(#env.settingsWrites, writesBefore, "settings writes")
+  for _, script in ipairs(env.panels[#env.panels].scripts) do
+    assert(not script:find("31337", 1, true) and not script:find("424242", 1, true), "typed answer echoed back to the card")
+  end
 end)
 
 test("the source uses no character, network, file, shell, or clipboard APIs", function()

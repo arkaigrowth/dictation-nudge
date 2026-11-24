@@ -14,10 +14,42 @@ local KEYCODES = {
   f1 = 122, f2 = 120, f3 = 99, f4 = 118, f5 = 96, f6 = 97, f7 = 98, f8 = 100,
   f9 = 101, f10 = 109, f11 = 103, f12 = 111, f13 = 105, f14 = 107, f15 = 113,
   f16 = 106, f17 = 64, f18 = 79, f19 = 80, f20 = 90,
+  -- answer keys for the snooze gate
+  ["0"] = 29, ["1"] = 18, ["2"] = 19, ["3"] = 20, ["4"] = 21, ["5"] = 23,
+  ["6"] = 22, ["7"] = 26, ["8"] = 28, ["9"] = 25,
+  ["."] = 47, [","] = 43, ["-"] = 27, delete = 51, forwarddelete = 117,
+  ["return"] = 36, padenter = 76, ["pad."] = 65, ["pad-"] = 78,
+  pad0 = 82, pad1 = 83, pad2 = 84, pad3 = 85, pad4 = 86, pad5 = 87,
+  pad6 = 88, pad7 = 89, pad8 = 91, pad9 = 92,
 }
 
 local EVENT_TYPES = { keyDown = 10, flagsChanged = 12 }
 local EVENT_PROPERTIES = { keyboardEventAutorepeat = 8 }
+
+-- Enough JSON for what the module sends to the card: flat tables of strings,
+-- numbers, and booleans. Keys are sorted so the output is stable.
+local function encodeJSON(value)
+  local kind = type(value)
+  if kind == "table" then
+    local keys = {}
+    for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+    table.sort(keys)
+    local parts = {}
+    for _, key in ipairs(keys) do
+      parts[#parts + 1] = encodeJSON(key) .. ":" .. encodeJSON(value[key])
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  elseif kind == "string" then
+    return '"' .. value:gsub('[%c"\\]', function(c)
+      return c == '"' and '\\"' or c == "\\" and "\\\\" or string.format("\\u%04x", c:byte())
+    end) .. '"'
+  elseif kind == "number" then
+    return value == math.floor(value) and string.format("%d", value) or tostring(value)
+  elseif kind == "boolean" then
+    return tostring(value)
+  end
+  return "null"
+end
 
 -- An object whose unknown methods all return the object, so builder chains
 -- like hs.webview.new(...):windowStyle(...):show() work.
@@ -39,7 +71,7 @@ function Stub.new()
     settingsWrites = {},
     logs = {},
     urlBinds = {},
-    panels = {},        -- every card opened: { html = ..., deleted = bool }
+    panels = {},        -- every card opened: { html = ..., deleted = bool, scripts = {...} }
     canvases = {},      -- every lockdown overlay: { deleted = bool }
     tapCallback = nil,  -- the function the module registered with hs.eventtap.new
     tapTypes = nil,
@@ -163,7 +195,7 @@ function Stub.new()
     bind = function(name, fn) env.urlBinds[name] = fn end,
   }
   hs.application = { open = function(name) table.insert(env.apps, name) end }
-  hs.json = { encode = function() return "{}" end }
+  hs.json = { encode = encodeJSON }
   hs.styledtext = { new = function(text) return text end }
   hs.focus = function() end
   hs.dialog = { textPrompt = function() return "Cancel", "" end }
@@ -194,10 +226,12 @@ function Stub.new()
       return { setCallback = function(_, callback) env.panelCallback = callback end }
     end },
     new = function()
-      local record = { html = nil, deleted = false }
+      local record = { html = nil, deleted = false, scripts = {} }
       table.insert(env.panels, record)
       return chain({
         html = function(self, html) record.html = html; return self end,
+        -- JavaScript the module pushes into the card (never executed here)
+        evaluateJavaScript = function(self, script) table.insert(record.scripts, script); return self end,
         delete = function() record.deleted = true end,
       })
     end,
