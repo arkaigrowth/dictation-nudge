@@ -77,7 +77,9 @@ function Stub.new()
     tapTypes = nil,
     panelCallback = nil, -- the card's JS -> Lua message handler
     menuTitle = nil,
-    jsResult = true,        -- what the card "returns" to evaluateJavaScript callbacks
+    jsResult = true,        -- what the card "returns" to evaluateJavaScript callbacks (false = no reply value)
+    deferJS = false,        -- true: replies queue in pendingJS instead of arriving at once
+    pendingJS = {},
     holdNavigation = false, -- true: a new card's page stays unloaded until env.finishNavigation()
   }
 
@@ -238,7 +240,16 @@ function Stub.new()
         -- callback gets env.jsResult (default true, the card's acknowledgement).
         evaluateJavaScript = function(self, script, callback)
           table.insert(record.scripts, script)
-          if callback then callback(env.jsResult) end
+          if not callback then return self end
+          -- A script's value is its last expression, so only one that ends in
+          -- "; true" can come back as true. With env.deferJS the reply waits in
+          -- env.pendingJS until the test delivers it, optionally with its own result.
+          local function reply(result)
+            if result == nil then result = env.jsResult end
+            if result == true and not script:find("; true$") then result = nil end
+            callback(result ~= false and result or nil)
+          end
+          if env.deferJS then table.insert(env.pendingJS, reply) else reply() end
           return self
         end,
         delete = function() record.deleted = true end,
@@ -258,6 +269,13 @@ function Stub.new()
     if not record or record.loaded or record.deleted or not record.navigation then return end
     record.loaded = true
     record.navigation("didFinishNavigation", record.view)
+  end
+
+  -- The page in the newest card failed to load.
+  function env.failNavigation()
+    local record = env.panels[#env.panels]
+    record.loaded = true
+    record.navigation("didFailProvisionalNavigation", record.view)
   end
 
   -- Pages load by the time anything else happens, unless a test holds them back.
