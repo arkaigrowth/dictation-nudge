@@ -924,12 +924,36 @@ test("money math: every possible problem has a positive whole-number answer", fu
         assert(not shown:find("%f[%S]" .. bank.money(answer):gsub("%$", "%%$") .. "%f[%s%.]"),
           "hint states the answer in dollars, " .. where .. " | " .. hint)
       end
+      -- Same rule for the Tip button's shortcut, which is fixed per kind of problem.
+      local tip = " " .. template.tip:gsub("[%.%?]$", "") .. " "
+      if question:lower():find("percent", 1, true) then
+        assert(not tip:find("%f[%S]" .. string.format("%d", answer) .. "%%%f[%s%.]"), "tip states the answer as a percent, " .. where)
+      else
+        assert(not tip:find("%f[%S]" .. bank.money(answer):gsub("%$", "%%$") .. "%f[%s%.]"), "tip states the answer in dollars, " .. where)
+      end
       assert(bank.isCorrect({ answer = answer }, string.format("%d", answer)), "own answer rejected, " .. where)
       assert(not bank.isCorrect({ answer = answer }, string.format("%d", answer + 1)), "wrong answer accepted, " .. where)
     end
     walk({})
   end
   assert(combinations > 250, "enumerated " .. combinations .. " combinations")
+end)
+
+test("money math: every kind of problem has a short tip, and the card is sent it", function()
+  local env = load({ snoozeMathProblems = 3 })
+  for _, template in ipairs(env.internal.moneyMath.TEMPLATES) do
+    assert(type(template.tip) == "string" and #template.tip >= 20, template.name .. ": tip missing")
+    assert(utf8.len(template.tip) <= 120, template.name .. ": tip too long for the card (" .. utf8.len(template.tip) .. ")")
+    assert(not template.tip:find("%$"), template.name .. ": a tip uses no dollar amounts")
+    assert(not template.tip:find("\226\128\148"), template.name .. ": em dash")
+  end
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  local gate = env.internal.gate()
+  for index = 1, 3 do
+    assert(lastScript(env):find('"tip":"' .. gate.problems[index].tip .. '"', 1, true), "problem " .. index .. " is sent with its own tip")
+    if index < 3 then answerCurrent(env) end
+  end
 end)
 
 test("money math: a challenge never repeats a template; answers parse like a person types them", function()
