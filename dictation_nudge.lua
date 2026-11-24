@@ -25,7 +25,7 @@
 --   * It logs state changes to the Hammerspoon console (for example:
 --     started, nudge fired, lockdown began or ended, snoozed, limit or
 --     snooze-gate count changed). Ordinary typing logs nothing, and
---     neither does anything typed into the card.
+--     the text typed into the card's fields is never logged.
 --   * On disk it persists three preferences through hs.settings: the
 --     allowance, the last snooze length, and the snooze-gate problem
 --     count.
@@ -283,14 +283,15 @@ local TEMPLATES = {
       local bill, pct = pick({20, 40, 60, 80, 100, 120, 140, 160}), pick({10, 15, 20})
       return string.format("%d%% tip on a %s bill. Tip in dollars?", pct, money(bill)),
         bill * pct / 100,
-        string.format("10%% of %s is %s. Build %d%% from that.", money(bill), money(bill / 10), pct)
+        pct == 10 and "10% is the bill with the decimal point moved one place left."
+          or string.format("10%% of %s is %s. Build %d%% from that.", money(bill), money(bill / 10), pct)
     end },
 
   { name = "discount", make = function(pick)
       local price, off = pick({40, 60, 80, 120, 160, 200}), pick({10, 20, 25, 30, 50})
       return string.format("%s jacket, %d%% off. Sale price?", money(price), off),
         price - price * off / 100,
-        string.format("%d%% of %s is %s. Subtract it.", off, money(price), money(price * off / 100))
+        string.format("Work out %d%% of %s first, then subtract it.", off, money(price))
     end },
 
   { name = "sales_tax", make = function(pick)
@@ -356,7 +357,7 @@ local TEMPLATES = {
       local saved = income * pct / 100
       return string.format("You take home %s a month and save %s. Savings rate, in percent?", money(income), money(saved)),
         pct,
-        string.format("10%% of %s is %s. Compare %s to that.", money(income), money(income / 10), money(saved))
+        string.format("Savings divided by take-home pay: %s / %s.", money(saved), money(income))
     end },
 
   { name = "split_with_tip", make = function(pick)
@@ -380,7 +381,7 @@ local TEMPLATES = {
 
   { name = "employer_match", make = function(pick)
       local salary, match = pick({50000, 60000, 80000, 100000, 120000}), pick({3, 4, 5, 6})
-      return string.format("%s salary with a %d%% 401(k) match. Free money per year if you take all of it?", money(salary), match),
+      return string.format("Your employer matches 401(k) contributions up to %d%% of your %s salary. Most free money per year?", match, money(salary)),
         salary * match / 100,
         string.format("1%% of %s is %s. Times %d.", money(salary), money(salary / 100), match)
     end },
@@ -388,7 +389,7 @@ local TEMPLATES = {
   { name = "compound_two_years", make = function(pick)
       local principal, rate = pick({1000, 2000, 5000, 10000}), pick({10, 20})
       local year1 = principal + principal * rate / 100
-      return string.format("Invest %s at %d%% a year, compounding. Value after 2 years?", money(principal), rate),
+      return string.format("Invest %s at %d%% a year, compounded once a year. Value after 2 years?", money(principal), rate),
         year1 + year1 * rate / 100,
         string.format("Year 1 ends at %s. Year 2 grows that, not the original %s.", money(year1), money(principal))
     end },
@@ -419,7 +420,8 @@ local TEMPLATES = {
       local balance, fee = pick({50000, 100000, 200000, 400000}), pick({1, 2})
       return string.format("A fund charges a %d%% fee each year. On a %s balance, how many dollars a year?", fee, money(balance)),
         balance * fee / 100,
-        string.format("1%% of %s is %s.", money(balance), money(balance / 100))
+        fee == 1 and "1% is the balance with two zeros dropped."
+          or string.format("1%% of %s is %s. Double it.", money(balance), money(balance / 100))
     end },
 
   { name = "drawdown_recovery", make = function(pick)
@@ -454,7 +456,8 @@ local TEMPLATES = {
       local price, pct = pick({200000, 300000, 400000, 500000}), pick({5, 10, 20})
       return string.format("%d%% down on a %s home. Down payment in dollars?", pct, money(price)),
         price * pct / 100,
-        string.format("10%% of %s is %s. Scale from there.", money(price), money(price / 10))
+        pct == 10 and "10% is the price with one zero dropped."
+          or string.format("10%% of %s is %s. Scale from there.", money(price), money(price / 10))
     end },
 }
 MoneyMath.TEMPLATES = TEMPLATES
@@ -478,20 +481,23 @@ function MoneyMath.newChallenge(count, rand)
   return problems
 end
 
--- Accepts "9", "$1,200", "15%", " 1210.00 ". Returns a number, or nil when the
--- text is not a plain number.
+-- Accepts "9", "$1,200", "15%", " 1210.00 ". One optional "$" in front, one
+-- optional "%" behind, commas only as thousands separators. Returns a number,
+-- or nil when the text is not exactly one plain number.
 function MoneyMath.parseAnswer(text)
   if type(text) ~= "string" then return nil end
-  local cleaned = text:gsub("[%s%$,%%]", "")
-  if not cleaned:match("^%-?%d+%.?%d*$") and not cleaned:match("^%-?%.%d+$") then return nil end
-  return tonumber(cleaned)
+  local sign, whole, fraction = text:match("^%s*(%-?)%$?%s*([%d,]*)(%.?%d*)%s*%%?%s*$")
+  if not whole or (whole == "" and not fraction:match("%d")) then return nil end
+  if whole:find(",", 1, true) then
+    local head, groups = whole:match("^(%d%d?%d?)(.*)$")
+    if not head or groups == "" or groups:gsub(",%d%d%d", "") ~= "" then return nil end
+  end
+  return tonumber(sign .. (whole:gsub(",", "")) .. (fraction == "." and "" or fraction))
 end
 
 function MoneyMath.isCorrect(problem, text)
-  local value = MoneyMath.parseAnswer(text)
-  return value ~= nil and math.abs(value - problem.answer) < 0.005
+  return MoneyMath.parseAnswer(text) == problem.answer
 end
-
 
 -- ═══ Dictation trigger ═══
 local function startDictation()
@@ -597,8 +603,8 @@ end
 
 -- ═══ Snooze ═══
 -- Typed snooze lengths, minutes and hours only. Deterministic: a fixed
--- grammar, no guessing. Returns whole minutes, or nil plus a short reason
--- the card can show.
+-- grammar, no guessing, no rounding. Returns whole minutes, or nil plus a
+-- short reason the card can show.
 --   90 | 45m | 90 mins | 2h | 1.5 hours | 1h30 | 1h 30m | 1 hr, 15 min
 --   1 hour and 30 minutes | 1:30 | an hour | half an hour | an hour and a half
 local SNOOZE_UNITS = {
@@ -612,14 +618,28 @@ for _, word in ipairs({
 }) do SNOOZE_REFUSED_UNITS[word] = true end
 local SNOOZE_HELP = "Try 45m, 1.5h, or 1h 30m."
 local SNOOZE_UNITS_ONLY = "Minutes and hours only."
+local SNOOZE_WHOLE = "Use a whole number of minutes."
+local SNOOZE_RANGE = "Snooze can be 1 minute to 12 hours."
+
+-- One number token at `scale` minutes per unit -> exact whole minutes.
+-- Integer arithmetic only: no rounding, and short tokens so nothing overflows.
+local function wholeMinutes(number, scale)
+  local whole, fraction = number:match("^(%d*)%.?(%d*)$")
+  fraction = fraction:gsub("0+$", "")
+  if #whole > 4 then return nil, SNOOZE_RANGE end
+  if #fraction > 4 then return nil, SNOOZE_WHOLE end
+  local numerator, denominator = tonumber(whole .. fraction) * scale, math.tointeger(10 ^ #fraction)
+  if numerator % denominator ~= 0 then return nil, SNOOZE_WHOLE end
+  return numerator // denominator
+end
 
 local function parseSnoozeLength(text)
   if type(text) ~= "string" then return nil, SNOOZE_HELP end
-  local s = text:lower():gsub(",", " "):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+  local s = text:lower():gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
   if s == "" then return nil, SNOOZE_HELP end
 
   local total
-  local clockHours, clockMinutes = s:match("^(%d+):(%d%d)$") -- 1:30
+  local clockHours, clockMinutes = s:match("^(%d%d?%d?):(%d%d)$") -- 1:30
   if clockHours then
     if tonumber(clockMinutes) >= 60 then return nil, SNOOZE_HELP end
     total = tonumber(clockHours) * 60 + tonumber(clockMinutes)
@@ -629,7 +649,10 @@ local function parseSnoozeLength(text)
     local plusHalf = false
     local head = s:match("^(.-) and a half$")      -- "an hour and a half"
     if head then s, plusHalf = head, true end
-    s = s:gsub(" and ", " "):gsub("^an? ", "1 ")   -- "an hour"
+    -- "and" and "," are read only between the hours and the minutes
+    -- ("1 hour and 30 minutes", "1 hr, 15 min"); anywhere else they refuse.
+    s = s:gsub("(%a) and (%d)", "%1 %2"):gsub("(%a), ?(%d)", "%1 %2"):gsub("^an? ", "1 ")
+    if s:find(",", 1, true) then return nil, SNOOZE_HELP end
 
     -- One hours term, then one minutes term, each optional, in that order.
     local rest, sawHours, sawMinutes = s, false, false
@@ -641,22 +664,22 @@ local function parseSnoozeLength(text)
         local word = rest:match("^(%a+)")
         return nil, (word and SNOOZE_REFUSED_UNITS[word]) and SNOOZE_UNITS_ONLY or SNOOZE_HELP
       end
-      local value = tonumber(number)
       local word, tail = after:match("^(%a+)%s*(.*)$")
+      local scale = 1
       if word then
-        local scale = SNOOZE_UNITS[word]
+        scale = SNOOZE_UNITS[word]
         if not scale then return nil, SNOOZE_REFUSED_UNITS[word] and SNOOZE_UNITS_ONLY or SNOOZE_HELP end
         if sawMinutes or (scale == 60 and sawHours) then return nil, SNOOZE_HELP end
-        if scale == 60 then sawHours = true else sawMinutes = true end
-        total = total + value * scale
         rest = tail
       else
         -- A bare number is minutes: either the whole input, or what follows the hours ("1h30").
         if after ~= "" or sawMinutes then return nil, SNOOZE_HELP end
-        sawMinutes = true
-        total = total + value
         rest = ""
       end
+      if scale == 60 then sawHours = true else sawMinutes = true end
+      local minutes, reason = wholeMinutes(number, scale)
+      if not minutes then return nil, reason end
+      total = total + minutes
     end
     if plusHalf then
       if not sawHours or sawMinutes then return nil, SNOOZE_HELP end
@@ -664,10 +687,8 @@ local function parseSnoozeLength(text)
     end
   end
 
-  local minutes = math.floor(total + 0.5)
-  if math.abs(total - minutes) > 1e-6 then return nil, "Use a whole number of minutes." end
-  if minutes < 1 or minutes > SNOOZE_MAX_MINUTES then return nil, "Snooze can be 1 minute to 12 hours." end
-  return minutes
+  if total < 1 or total > SNOOZE_MAX_MINUTES then return nil, SNOOZE_RANGE end
+  return total
 end
 
 local updateMenubar -- forward declarations (mutual references)
@@ -682,6 +703,7 @@ local lastSnoozeToggleAt = 0
 -- { action = {kind=, minutes=}, problems = {...}, index = n, misses = n }.
 -- It lives and dies with the card: closePanel() clears it.
 local gate
+local gateSerial = 0
 
 -- 0 = gate off. start() validates the option and the card can only set 0..10.
 local function snoozeMathCount()
@@ -782,8 +804,12 @@ local function setSnoozeMathCount(value)
   log.i("Snooze math: " .. (value == 0 and "off" or (config.snoozeMathProblems .. " problem(s)")))
 end
 
+local rebuildGateAnswerKeycodes -- defined with the keystroke handler
+
 local function newGate(action)
-  return { action = action, problems = MoneyMath.newChallenge(snoozeMathCount()), index = 1, misses = 0 }
+  gateSerial = gateSerial + 1
+  rebuildGateAnswerKeycodes() -- the keyboard layout may have changed since the last challenge
+  return { id = gateSerial, action = action, problems = MoneyMath.newChallenge(snoozeMathCount()), index = 1, misses = 0 }
 end
 
 -- What the card shows for the current problem (nil = no challenge).
@@ -794,7 +820,7 @@ local function gateView(feedback, wrong)
     and ("snooze " .. fmtMinutes(gate.action.minutes)) or "disable the nudge"
   return {
     title = string.format("Solve %d to %s", total, goal),
-    index = gate.index, total = total,
+    id = gate.id, index = gate.index, total = total,
     question = gate.problems[gate.index].question,
     feedback = feedback or "", wrong = wrong == true,
   }
@@ -834,8 +860,11 @@ requestGated = function(action)
   end
 end
 
-local function answerGate(text)
-  if not gate then return end
+-- `id` and `index` say which challenge and problem the card was showing when
+-- the answer was sent. A second click on Check, or a message from a card that
+-- has since been replaced, names an old one and is dropped.
+local function answerGate(id, index, text)
+  if not gate or id ~= gate.id or index ~= gate.index then return end
   local problem = gate.problems[gate.index]
   if MoneyMath.parseAnswer(text) == nil then
     pushGate("Type a number, like 45 or 1,200.", true)
@@ -852,8 +881,8 @@ local function answerGate(text)
   end
 end
 
-local function cancelGate()
-  if not gate then return end
+local function cancelGate(id)
+  if not gate or id ~= gate.id then return end
   gate = nil
   pushGate() -- hides the challenge; the card stays open
 end
@@ -1288,23 +1317,32 @@ function renderMath(){
 // renders the view it is sent (null = no challenge) and posts what was typed.
 var gate=document.getElementById('gate'), gateAnswer=document.getElementById('gateanswer');
 var gateQuestion=document.getElementById('gatequestion'), gateFeedback=document.getElementById('gatefeedback');
+var gateShown=null;
+// Everything behind the challenge goes inert, so Tab cannot reach it either.
+function setGateOpen(open){
+  gate.classList.toggle('hidden',!open);
+  [].forEach.call(document.body.children,function(el){ if(el!==gate && el.tagName!=='SCRIPT') el.inert=open; });
+}
 function showGate(view){
-  if(!view){ gate.classList.add('hidden'); return; }
+  gateShown=view;
+  if(!view){ setGateOpen(false); return; }
   hideSnoozeMenu(); setPrefsOpen(false);
   document.getElementById('gatetitle').textContent=view.title;
   document.getElementById('gateprogress').textContent='Problem '+view.index+' of '+view.total;
   if(gateQuestion.textContent!==view.question){ gateQuestion.textContent=view.question; gateAnswer.value=''; }
   gateFeedback.textContent=view.feedback;
   gateFeedback.classList.toggle('wrong',!!view.wrong);
-  gate.classList.remove('hidden');
+  setGateOpen(true);
   gateAnswer.focus(); gateAnswer.select();
 }
+// id and index name the problem on screen, so a second click cannot answer the next one.
 function submitGate(){
-  if(gateAnswer.value.trim()){ send({action:'gateAnswer', value:gateAnswer.value}); } else { gateAnswer.focus(); }
+  if(!gateShown) return;
+  if(gateAnswer.value.trim()){ send({action:'gateAnswer', id:gateShown.id, index:gateShown.index, value:gateAnswer.value}); } else { gateAnswer.focus(); }
 }
 document.getElementById('gatecheck').addEventListener('click',submitGate);
 gateAnswer.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); submitGate(); } });
-document.getElementById('gatecancel').addEventListener('click',function(){ send({action:'gateCancel'}); });
+document.getElementById('gatecancel').addEventListener('click',function(){ if(gateShown) send({action:'gateCancel', id:gateShown.id}); });
 showGate(__GATEVIEW__);
 </script></body></html>
 ]]
@@ -1372,9 +1410,9 @@ openPanel = function(mode, pendingAction)
         requestGated({ kind = "disable" })
       end
     elseif body.action == "gateAnswer" then
-      answerGate(body.value)
+      answerGate(body.id, body.index, body.value)
     elseif body.action == "gateCancel" then
-      cancelGate()
+      cancelGate(body.id)
     elseif body.action == "setGate" then
       setSnoozeMathCount(body.value)
     elseif body.action == "close" then
@@ -1437,6 +1475,7 @@ openPanel = function(mode, pendingAction)
     :navigationCallback(function(action, panel)
       if action == "didFinishNavigation" and panel == _G.dictationNudgePanel then
         startPanelRing(panel)
+        if gate then pushGate() end -- one requested while the page was still loading
       end
     end)
     :windowCallback(function(action, panel)
@@ -1526,10 +1565,12 @@ end
 -- Keys needed to answer a snooze-gate problem: digits, separators, delete,
 -- Return. While a problem is showing they are invisible, like Tab or the
 -- arrows, so answering never spends allowance. Letters still count, so a
--- problem left on screen is not a free pass to keep typing.
+-- problem left on screen is not a free pass to keep typing. Looked up by
+-- name each time a challenge starts, so it follows the keyboard layout.
 local gateAnswerKeycodes = {}
-do
-  local names = {".", ",", "-", "delete", "forwarddelete", "return", "padenter", "pad.", "pad-"}
+rebuildGateAnswerKeycodes = function()
+  for code in pairs(gateAnswerKeycodes) do gateAnswerKeycodes[code] = nil end
+  local names = {".", ",", "-", "delete", "forwarddelete", "return", "padenter", "pad.", "pad,", "pad-"}
   for digit = 0, 9 do
     table.insert(names, tostring(digit))
     table.insert(names, "pad" .. digit)

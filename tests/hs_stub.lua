@@ -230,6 +230,7 @@ function Stub.new()
       table.insert(env.panels, record)
       return chain({
         html = function(self, html) record.html = html; return self end,
+        navigationCallback = function(self, callback) record.navigation = callback; record.view = self; return self end,
         -- JavaScript the module pushes into the card (never executed here)
         evaluateJavaScript = function(self, script) table.insert(record.scripts, script); return self end,
         delete = function() record.deleted = true end,
@@ -241,6 +242,12 @@ function Stub.new()
 
   -- Send what the card's JavaScript would post to Lua.
   function env.cardMessage(body) env.panelCallback({ body = body }) end
+
+  -- The page in the newest card has finished loading.
+  function env.finishNavigation()
+    local record = env.panels[#env.panels]
+    record.navigation("didFinishNavigation", record.view)
+  end
 
   function env.openPanels()
     local count = 0
