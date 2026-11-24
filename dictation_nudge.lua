@@ -23,10 +23,12 @@
 --     nudge fired, and when a lockdown ends. No keycode, flag, or
 --     character is stored, logged, or sent anywhere.
 --   * It logs state changes to the Hammerspoon console (for example:
---     started, nudge fired, lockdown began or ended, snoozed, limit
---     changed). Ordinary typing logs nothing.
---   * On disk it persists two preferences through hs.settings: the
---     allowance and the last snooze length.
+--     started, nudge fired, lockdown began or ended, snoozed, limit or
+--     snooze-gate count changed). Ordinary typing logs nothing, and
+--     neither does anything typed into the card.
+--   * On disk it persists three preferences through hs.settings: the
+--     allowance, the last snooze length, and the snooze-gate problem
+--     count.
 --   * The module makes no network calls of its own. The card's Start
 --     button asks macOS to open `dictationURL`, which is whatever you
 --     configure, with whatever app is registered for it.
@@ -65,7 +67,21 @@
 --       hammerspoon://dictationNudgeSnooze
 --       hammerspoon://dictationNudgeTest   (a preview: no cooldown, no lockdown)
 --   * The allowance ("Never" = off) and snooze length persist across reloads.
+--   * Custom snooze lengths are typed in minutes and hours: 45m, 1.5h,
+--     1h 30m, 2 hours, 1:30, "an hour and a half". A bare number is
+--     minutes. 1 minute to 12 hours; days and longer are refused.
 --   * Disable/Enable is session-only: a reload re-enables.
+--
+-- Snooze gate (optional, off by default):
+--   Set "Math to snooze" under the card's gear (or `snoozeMathProblems` in
+--   config) to 1 or more, and Snooze and Disable first show that many
+--   short money-math problems: tips, discounts, interest, the rule of 72,
+--   runway, fees. The snooze starts
+--   only after the last correct answer. Esc or "Never mind" drops it.
+--   It is friction for a reflex, not a lock: ending a snooze, re-enabling,
+--   the allowance slider, and the setting itself are never gated.
+--   While a problem is showing, digit keys don't spend allowance. The answer
+--   box is the card's own text field; the event tap still reads no characters.
 --
 -- Requires Accessibility AND Input Monitoring for Hammerspoon
 -- (System Settings -> Privacy & Security). A missing Input Monitoring
@@ -97,10 +113,13 @@ local DEFAULTS = {
   resetModifiers       = {"ctrl", "alt"}, -- holding exactly these refills the allowance
                                  -- (match your dictation hotkey); false = no reset chord
   snoozeMinutes        = 30,     -- snooze duration
+  snoozeMathProblems   = 0,      -- money-math problems to solve before Snooze or Disable
+                                 -- takes effect (0 = off, max 10); see "Snooze gate" above
   menubarEnabled       = true,   -- native remaining-seconds indicator
   menubarAutosaveName  = "DictationNudge", -- macOS remembers the item's position under this name
   settingsKey          = "dictationNudge.nudgeAfterSeconds", -- hs.settings persistence key
   snoozeSettingsKey    = "dictationNudge.snoozeMinutes",     -- last-used snooze duration
+  snoozeMathSettingsKey = "dictationNudge.snoozeMathProblems", -- snooze-gate count set on the card
 }
 
 -- The live config: defaults, then whatever start({...}) passed.
@@ -108,6 +127,7 @@ local config = {}
 for key, value in pairs(DEFAULTS) do config[key] = value end
 
 local SNOOZE_MAX_MINUTES = 720
+local SNOOZE_MATH_MAX = 10
 
 -- Called by start() before it touches anything. A wrong type would otherwise
 -- surface later as an error inside the keyboard callback, and a misspelled
@@ -134,10 +154,14 @@ local function validateConfig(candidate)
   if not isNumber(snooze) or snooze < 1 or snooze > SNOOZE_MAX_MINUTES then
     fail("snoozeMinutes", "between 1 and " .. SNOOZE_MAX_MINUTES)
   end
+  local problems = candidate.snoozeMathProblems
+  if not isNumber(problems) or problems ~= math.floor(problems) or problems < 0 or problems > SNOOZE_MATH_MAX then
+    fail("snoozeMathProblems", "a whole number from 0 to " .. SNOOZE_MATH_MAX)
+  end
   for _, key in ipairs({"lockdownEnabled", "menubarEnabled"}) do
     if type(candidate[key]) ~= "boolean" then fail(key, "true or false") end
   end
-  for _, key in ipairs({"dictationName", "menubarAutosaveName", "settingsKey", "snoozeSettingsKey"}) do
+  for _, key in ipairs({"dictationName", "menubarAutosaveName", "settingsKey", "snoozeSettingsKey", "snoozeMathSettingsKey"}) do
     if type(candidate[key]) ~= "string" or candidate[key] == "" then fail(key, "a non-empty string") end
   end
   for _, key in ipairs({"soundName", "dictationURL"}) do
@@ -233,6 +257,241 @@ local function fmtThreshold(v)
   if s == 0 then return m .. "m" end
   return m .. "m " .. s .. "s"
 end
+
+-- ═══ Snooze gate: everyday money math ═══
+-- Pure and deterministic given `pick`. No Hammerspoon calls in here, so the
+-- whole bank runs under plain `lua` in the tests.
+--
+-- Every template takes pick(list) -> one element, and returns
+--   question (string), answer (whole number), hint (string shown after a miss).
+-- Parameter lists are chosen so every answer is a whole number you can reach
+-- in your head. If you add a template, keep that property: the tests draw
+-- every template thousands of times and fail on a fractional answer.
+
+local MoneyMath = {}
+
+-- 1200 -> "$1,200"
+local function money(n)
+  local s = tostring(math.floor(n + 0.5))
+  local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  return "$" .. out:gsub("^,", "")
+end
+MoneyMath.money = money
+
+local TEMPLATES = {
+  { name = "tip", make = function(pick)
+      local bill, pct = pick({20, 40, 60, 80, 100, 120, 140, 160}), pick({10, 15, 20})
+      return string.format("%d%% tip on a %s bill. Tip in dollars?", pct, money(bill)),
+        bill * pct / 100,
+        string.format("10%% of %s is %s. Build %d%% from that.", money(bill), money(bill / 10), pct)
+    end },
+
+  { name = "discount", make = function(pick)
+      local price, off = pick({40, 60, 80, 120, 160, 200}), pick({10, 20, 25, 30, 50})
+      return string.format("%s jacket, %d%% off. Sale price?", money(price), off),
+        price - price * off / 100,
+        string.format("%d%% of %s is %s. Subtract it.", off, money(price), money(price * off / 100))
+    end },
+
+  { name = "sales_tax", make = function(pick)
+      local price, tax = pick({20, 40, 60, 80, 120, 200}), pick({5, 10})
+      return string.format("%s item plus %d%% sales tax. Total?", money(price), tax),
+        price + price * tax / 100,
+        string.format("%d%% of %s is %s. Add it on.", tax, money(price), money(price * tax / 100))
+    end },
+
+  { name = "percent_change", make = function(pick)
+      local old, pct, up = pick({20, 40, 60, 80, 100, 200}), pick({10, 20, 25, 50}), pick({true, false})
+      local change = old * pct / 100
+      local new = up and old + change or old - change
+      return string.format("A stock goes from %s to %s. Percent %s?", money(old), money(new), up and "gain" or "drop"),
+        pct,
+        string.format("Change divided by the starting price: %s / %s.", money(change), money(old))
+    end },
+
+  { name = "rule_of_72", make = function(pick)
+      local rate = pick({2, 3, 4, 6, 8, 9, 12})
+      if pick({true, false}) then
+        return string.format("Rule of 72: at %d%% a year, about how many years for money to double?", rate),
+          72 / rate, string.format("72 / %d.", rate)
+      end
+      return string.format("Rule of 72: you want to double your money in %d years. Yearly return needed, in percent?", 72 / rate),
+        rate, string.format("72 / %d.", 72 / rate)
+    end },
+
+  { name = "card_interest", make = function(pick)
+      local balance, apr = pick({1000, 2000, 3000, 4000, 5000, 6000}), pick({12, 18, 24, 30})
+      return string.format("%s card balance at %d%% APR. Roughly how much interest this month?", money(balance), apr),
+        balance * apr / 1200,
+        string.format("%d%% a year is %s%% a month. Take that share of %s.", apr, tostring(apr / 12):gsub("%.0$", ""), money(balance))
+    end },
+
+  { name = "subscription_year", make = function(pick)
+      local monthly = pick({5, 8, 10, 12, 15, 20, 25, 30, 40, 50})
+      return string.format("A %s a month subscription. Cost per year?", money(monthly)),
+        monthly * 12,
+        string.format("%s x 12 = %s x 10, plus %s x 2.", money(monthly), money(monthly), money(monthly))
+    end },
+
+  { name = "daily_habit", make = function(pick)
+      local cost, days = pick({4, 5, 6, 8, 10}), pick({3, 5})
+      return string.format("%s coffee, %d days a week, 50 weeks a year. Yearly cost?", money(cost), days),
+        cost * days * 50,
+        string.format("%d days x 50 weeks = %d days. Then x %s.", days, days * 50, money(cost))
+    end },
+
+  { name = "hourly_salary", make = function(pick)
+      if pick({true, false}) then
+        local rate = pick({20, 25, 30, 35, 40, 50, 60, 75})
+        return string.format("%s an hour, full time (2,000 hours a year). Annual pay?", money(rate)),
+          rate * 2000, "Double the hourly rate, then add three zeros."
+      end
+      local salary = pick({50000, 60000, 80000, 90000, 100000, 120000, 150000})
+      return string.format("%s salary, 2,000 work hours a year. Hourly rate in dollars?", money(salary)),
+        salary / 2000, "Drop three zeros, then halve."
+    end },
+
+  { name = "savings_rate", make = function(pick)
+      local income, pct = pick({4000, 5000, 6000, 8000}), pick({5, 10, 15, 20, 25})
+      local saved = income * pct / 100
+      return string.format("You take home %s a month and save %s. Savings rate, in percent?", money(income), money(saved)),
+        pct,
+        string.format("10%% of %s is %s. Compare %s to that.", money(income), money(income / 10), money(saved))
+    end },
+
+  { name = "split_with_tip", make = function(pick)
+      local people, share = pick({2, 3, 4, 5}), pick({12, 18, 24, 30, 36})
+      local bill = people * share / 1.2 -- shares are multiples of 6, so this stays whole
+      bill = math.floor(bill + 0.5)
+      return string.format("%s dinner plus a 20%% tip, split %d ways. What does each person pay?", money(bill), people),
+        share,
+        string.format("Tip first: %s + %s = %s. Then divide by %d.", money(bill), money(bill / 5), money(bill * 1.2), people)
+    end },
+
+  { name = "four_percent_rule", make = function(pick)
+      local spend = pick({30000, 40000, 50000, 60000, 80000, 100000})
+      if pick({true, false}) then
+        return string.format("You spend %s a year. Nest egg needed under the 4%% rule (25 x yearly spending)?", money(spend)),
+          spend * 25, "Multiply by 100, then divide by 4."
+      end
+      return string.format("A %s portfolio at a 4%% withdrawal rate. How many dollars a year?", money(spend * 25)),
+        spend, "1% is the portfolio with two zeros dropped. Take four of those."
+    end },
+
+  { name = "employer_match", make = function(pick)
+      local salary, match = pick({50000, 60000, 80000, 100000, 120000}), pick({3, 4, 5, 6})
+      return string.format("%s salary with a %d%% 401(k) match. Free money per year if you take all of it?", money(salary), match),
+        salary * match / 100,
+        string.format("1%% of %s is %s. Times %d.", money(salary), money(salary / 100), match)
+    end },
+
+  { name = "compound_two_years", make = function(pick)
+      local principal, rate = pick({1000, 2000, 5000, 10000}), pick({10, 20})
+      local year1 = principal + principal * rate / 100
+      return string.format("Invest %s at %d%% a year, compounding. Value after 2 years?", money(principal), rate),
+        year1 + year1 * rate / 100,
+        string.format("Year 1 ends at %s. Year 2 grows that, not the original %s.", money(year1), money(principal))
+    end },
+
+  { name = "profit_margin", make = function(pick)
+      local sale, margin = pick({20, 40, 80, 100, 200}), pick({10, 20, 25, 40, 50})
+      local cost = sale - sale * margin / 100
+      return string.format("Buy for %s, sell for %s. Profit margin, as a percent of the sale price?", money(cost), money(sale)),
+        margin,
+        string.format("Profit / sale price: %s / %s. (Markup would divide by cost instead.)", money(sale - cost), money(sale))
+    end },
+
+  { name = "runway", make = function(pick)
+      local spend, months = pick({2000, 3000, 4000, 5000}), pick({3, 6, 8, 12})
+      return string.format("You have %s saved and spend %s a month. Months of runway?", money(spend * months), money(spend)),
+        months,
+        string.format("%s / %s. Drop the zeros first.", money(spend * months), money(spend))
+    end },
+
+  { name = "payback", make = function(pick)
+      local saving, months = pick({10, 20, 25, 50}), pick({4, 6, 8, 12, 18})
+      return string.format("A %s purchase saves you %s a month. Months until it pays for itself?", money(saving * months), money(saving)),
+        months,
+        string.format("%s / %s.", money(saving * months), money(saving))
+    end },
+
+  { name = "fee_drag", make = function(pick)
+      local balance, fee = pick({50000, 100000, 200000, 400000}), pick({1, 2})
+      return string.format("A fund charges a %d%% fee each year. On a %s balance, how many dollars a year?", fee, money(balance)),
+        balance * fee / 100,
+        string.format("1%% of %s is %s.", money(balance), money(balance / 100))
+    end },
+
+  { name = "drawdown_recovery", make = function(pick)
+      local drop = pick({20, 50, 60, 75, 80})
+      return string.format("A stock falls %d%%. What percent gain gets it back to even?", drop),
+        drop * 100 / (100 - drop),
+        string.format("$100 becomes %s. Getting back needs %s more, on a base of %s.", money(100 - drop), money(drop), money(100 - drop))
+    end },
+
+  { name = "real_return", make = function(pick)
+      local nominal, inflation = pick({5, 6, 7, 8, 10}), pick({2, 3, 4})
+      return string.format("Your portfolio returns %d%% in a year with %d%% inflation. Roughly what real return, in percent?", nominal, inflation),
+        nominal - inflation, "Subtract inflation from the return."
+    end },
+
+  { name = "tax_set_aside", make = function(pick)
+      local invoice, pct = pick({1000, 2000, 4000, 5000, 8000}), pick({25, 30})
+      return string.format("You invoice %s as a contractor and set aside %d%% for taxes. Dollars set aside?", money(invoice), pct),
+        invoice * pct / 100,
+        pct == 25 and string.format("A quarter of %s.", money(invoice))
+          or string.format("10%% of %s is %s. Times 3.", money(invoice), money(invoice / 10))
+    end },
+
+  { name = "raise_after_tax", make = function(pick)
+      local raise, rate = pick({5000, 10000, 20000}), pick({22, 24, 32})
+      return string.format("A %s raise, taxed at a %d%% marginal rate. Extra take-home per year?", money(raise), rate),
+        raise - raise * rate / 100,
+        string.format("Tax is %d%% of %s = %s. Subtract it.", rate, money(raise), money(raise * rate / 100))
+    end },
+
+  { name = "down_payment", make = function(pick)
+      local price, pct = pick({200000, 300000, 400000, 500000}), pick({5, 10, 20})
+      return string.format("%d%% down on a %s home. Down payment in dollars?", pct, money(price)),
+        price * pct / 100,
+        string.format("10%% of %s is %s. Scale from there.", money(price), money(price / 10))
+    end },
+}
+MoneyMath.TEMPLATES = TEMPLATES
+
+-- Build `count` problems. `rand(n)` returns a whole number 1..n (math.random
+-- has this shape). Templates are not repeated until the bank runs out.
+function MoneyMath.newChallenge(count, rand)
+  rand = rand or math.random
+  local function pick(list) return list[rand(#list)] end
+  local order, problems = {}, {}
+  for i = 1, #TEMPLATES do order[i] = i end
+  for i = #order, 2, -1 do -- Fisher-Yates
+    local j = rand(i)
+    order[i], order[j] = order[j], order[i]
+  end
+  for i = 1, count do
+    local template = TEMPLATES[order[(i - 1) % #order + 1]]
+    local question, answer, hint = template.make(pick)
+    problems[i] = { kind = template.name, question = question, answer = answer, hint = hint }
+  end
+  return problems
+end
+
+-- Accepts "9", "$1,200", "15%", " 1210.00 ". Returns a number, or nil when the
+-- text is not a plain number.
+function MoneyMath.parseAnswer(text)
+  if type(text) ~= "string" then return nil end
+  local cleaned = text:gsub("[%s%$,%%]", "")
+  if not cleaned:match("^%-?%d+%.?%d*$") and not cleaned:match("^%-?%.%d+$") then return nil end
+  return tonumber(cleaned)
+end
+
+function MoneyMath.isCorrect(problem, text)
+  local value = MoneyMath.parseAnswer(text)
+  return value ~= nil and math.abs(value - problem.answer) < 0.005
+end
+
 
 -- ═══ Dictation trigger ═══
 local function startDictation()
@@ -337,12 +596,97 @@ local function startLockdown()
 end
 
 -- ═══ Snooze ═══
+-- Typed snooze lengths, minutes and hours only. Deterministic: a fixed
+-- grammar, no guessing. Returns whole minutes, or nil plus a short reason
+-- the card can show.
+--   90 | 45m | 90 mins | 2h | 1.5 hours | 1h30 | 1h 30m | 1 hr, 15 min
+--   1 hour and 30 minutes | 1:30 | an hour | half an hour | an hour and a half
+local SNOOZE_UNITS = {
+  h = 60, hr = 60, hrs = 60, hour = 60, hours = 60,
+  m = 1, min = 1, mins = 1, minute = 1, minutes = 1,
+}
+local SNOOZE_REFUSED_UNITS = {}
+for _, word in ipairs({
+  "s", "sec", "secs", "second", "seconds", "d", "day", "days", "w", "wk", "wks", "week", "weeks",
+  "mo", "mos", "month", "months", "y", "yr", "yrs", "year", "years",
+}) do SNOOZE_REFUSED_UNITS[word] = true end
+local SNOOZE_HELP = "Try 45m, 1.5h, or 1h 30m."
+local SNOOZE_UNITS_ONLY = "Minutes and hours only."
+
+local function parseSnoozeLength(text)
+  if type(text) ~= "string" then return nil, SNOOZE_HELP end
+  local s = text:lower():gsub(",", " "):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+  if s == "" then return nil, SNOOZE_HELP end
+
+  local total
+  local clockHours, clockMinutes = s:match("^(%d+):(%d%d)$") -- 1:30
+  if clockHours then
+    if tonumber(clockMinutes) >= 60 then return nil, SNOOZE_HELP end
+    total = tonumber(clockHours) * 60 + tonumber(clockMinutes)
+  else
+    if s == "half an hour" or s == "half a hour" or s == "half hour" or s == "a half hour" then s = "30m" end
+    s = s:gsub("(%d) and a half ", "%1.5 ")      -- "2 and a half hours"
+    local plusHalf = false
+    local head = s:match("^(.-) and a half$")      -- "an hour and a half"
+    if head then s, plusHalf = head, true end
+    s = s:gsub(" and ", " "):gsub("^an? ", "1 ")   -- "an hour"
+
+    -- One hours term, then one minutes term, each optional, in that order.
+    local rest, sawHours, sawMinutes = s, false, false
+    total = 0
+    while rest ~= "" do
+      local number, after = rest:match("^(%d+%.?%d*)%s*(.*)$")
+      if not number then number, after = rest:match("^(%.%d+)%s*(.*)$") end
+      if not number then
+        local word = rest:match("^(%a+)")
+        return nil, (word and SNOOZE_REFUSED_UNITS[word]) and SNOOZE_UNITS_ONLY or SNOOZE_HELP
+      end
+      local value = tonumber(number)
+      local word, tail = after:match("^(%a+)%s*(.*)$")
+      if word then
+        local scale = SNOOZE_UNITS[word]
+        if not scale then return nil, SNOOZE_REFUSED_UNITS[word] and SNOOZE_UNITS_ONLY or SNOOZE_HELP end
+        if sawMinutes or (scale == 60 and sawHours) then return nil, SNOOZE_HELP end
+        if scale == 60 then sawHours = true else sawMinutes = true end
+        total = total + value * scale
+        rest = tail
+      else
+        -- A bare number is minutes: either the whole input, or what follows the hours ("1h30").
+        if after ~= "" or sawMinutes then return nil, SNOOZE_HELP end
+        sawMinutes = true
+        total = total + value
+        rest = ""
+      end
+    end
+    if plusHalf then
+      if not sawHours or sawMinutes then return nil, SNOOZE_HELP end
+      total = total + 30
+    end
+  end
+
+  local minutes = math.floor(total + 0.5)
+  if math.abs(total - minutes) > 1e-6 then return nil, "Use a whole number of minutes." end
+  if minutes < 1 or minutes > SNOOZE_MAX_MINUTES then return nil, "Snooze can be 1 minute to 12 hours." end
+  return minutes
+end
+
 local updateMenubar -- forward declarations (mutual references)
 local openPanel
 local closePanel
 local toggleDisabled
+local requestGated
 
 local lastSnoozeToggleAt = 0
+
+-- Snooze gate state: nil, or the challenge in progress
+-- { action = {kind=, minutes=}, problems = {...}, index = n, misses = n }.
+-- It lives and dies with the card: closePanel() clears it.
+local gate
+
+-- 0 = gate off. start() validates the option and the card can only set 0..10.
+local function snoozeMathCount()
+  return config.snoozeMathProblems or 0
+end
 
 local function cancelSnooze()
   _G.dictationNudgeSnoozeUntil = nil
@@ -373,8 +717,10 @@ local function toggleSnooze()
 
   if snoozeRemaining() then
     cancelSnooze()
-  else
+  elseif snoozeMathCount() == 0 then
     startSnooze(config.snoozeMinutes)
+  else
+    requestGated({ kind = "snooze", minutes = config.snoozeMinutes })
   end
 end
 
@@ -421,6 +767,95 @@ toggleDisabled = function()
     hs.alert.show("🎙️ Dictation nudge enabled", 1.5)
   end
   updateMenubar()
+end
+
+-- ═══ Snooze gate (optional) ═══
+-- With snoozeMathProblems > 0, the card's Snooze and Disable buttons and the
+-- snooze URL event first show that many money-math problems. Lua owns the
+-- problems and checks the answers; the card only renders what it is sent.
+local function setSnoozeMathCount(value)
+  if gate then return end -- not while a challenge is showing
+  if type(value) ~= "number" or value ~= math.floor(value)
+    or value < 0 or value > SNOOZE_MATH_MAX then return end
+  config.snoozeMathProblems = math.floor(value)
+  hs.settings.set(config.snoozeMathSettingsKey, config.snoozeMathProblems)
+  log.i("Snooze math: " .. (value == 0 and "off" or (config.snoozeMathProblems .. " problem(s)")))
+end
+
+local function newGate(action)
+  return { action = action, problems = MoneyMath.newChallenge(snoozeMathCount()), index = 1, misses = 0 }
+end
+
+-- What the card shows for the current problem (nil = no challenge).
+local function gateView(feedback, wrong)
+  if not gate then return nil end
+  local total = #gate.problems
+  local goal = gate.action.kind == "snooze"
+    and ("snooze " .. fmtMinutes(gate.action.minutes)) or "disable the nudge"
+  return {
+    title = string.format("Solve %d to %s", total, goal),
+    index = gate.index, total = total,
+    question = gate.problems[gate.index].question,
+    feedback = feedback or "", wrong = wrong == true,
+  }
+end
+
+-- Run one statement in the open card. The card must already define what it calls.
+local function pushCard(script)
+  local panel = _G.dictationNudgePanel
+  if not panel then return end
+  pcall(function() panel:evaluateJavaScript(script .. "; true", function() end) end)
+end
+
+local function pushGate(feedback, wrong)
+  local view = gateView(feedback, wrong)
+  pushCard("showGate(" .. (view and hs.json.encode(view) or "null") .. ")")
+end
+
+local function runAction(action)
+  if action.kind == "snooze" then
+    startSnooze(action.minutes)
+  elseif not _G.dictationNudgeDisabled then
+    toggleDisabled()
+  end
+  closePanel()
+end
+
+requestGated = function(action)
+  if snoozeMathCount() == 0 then runAction(action); return end
+  if gate then            -- already mid-challenge: keep the problems, retarget
+    gate.action = action
+    pushGate()
+  elseif _G.dictationNudgePanel then
+    gate = newGate(action)
+    pushGate()
+  else
+    openPanel("settings", action) -- the card opens straight into the challenge
+  end
+end
+
+local function answerGate(text)
+  if not gate then return end
+  local problem = gate.problems[gate.index]
+  if MoneyMath.parseAnswer(text) == nil then
+    pushGate("Type a number, like 45 or 1,200.", true)
+  elseif not MoneyMath.isCorrect(problem, text) then
+    gate.misses = gate.misses + 1
+    pushGate("Not quite. " .. problem.hint, true)
+  elseif gate.index >= #gate.problems then
+    local action = gate.action
+    gate = nil
+    runAction(action)
+  else
+    gate.index = gate.index + 1
+    pushGate("Correct. Next one.")
+  end
+end
+
+local function cancelGate()
+  if not gate then return end
+  gate = nil
+  pushGate() -- hides the challenge; the card stays open
 end
 
 -- ═══ Menubar ═══
@@ -609,7 +1044,7 @@ button { border:none; border-radius:8px; cursor:pointer; color:#fff; font-weight
 #customopt { display:block; width:100%; text-align:center; padding:7px 0; background:#2a2d38; font-weight:500; font-size:13px; border-radius:6px; }
 #customopt:hover { background:#2f6bff; }
 #customrow { display:flex; gap:6px; margin-top:4px; }
-#custommin { flex:1; min-width:0; background:#16171d; border:1px solid #3a3f4e; border-radius:6px; color:#fff; padding:6px 8px; font-size:13px; }
+#custommin { flex:1; min-width:0; background:#16171d; border:1px solid #3a3f4e; border-radius:6px; color:#fff; font-family:inherit; padding:6px 8px; font-size:13px; user-select:text; }
 #customgo { background:#2f6bff; padding:6px 12px; font-size:13px; }
 .hidden { display:none !important; }
 .row > #dismiss { flex:1; }
@@ -619,7 +1054,38 @@ button { border:none; border-radius:8px; cursor:pointer; color:#fff; font-weight
 #disable { background:#3a2a2d; flex:0.7; }
 #disable:hover { background:#4a3538; }
 .esc { text-align:center; color:#5c6470; font-size:10px; margin-top:12px; }
+#customerror { color:#ffb4ad; font-size:11px; line-height:1.4; margin-top:5px; }
+/* Gear in the corner opens the less-used settings. It tints when the snooze gate is on. */
+#gear { position:absolute; top:14px; right:16px; width:28px; height:28px; padding:0; display:flex; align-items:center; justify-content:center; background:transparent; color:#98a0ae; border-radius:6px; }
+#gear.on { color:#a9c3ff; }
+#gear:hover, #gear[aria-expanded=true] { background:#2a2d38; color:#fff; }
+#prefs { position:absolute; top:46px; right:16px; z-index:4; width:252px; box-sizing:border-box; background:#232631; border:1px solid #3a3f4e; border-radius:10px; padding:10px; box-shadow:0 8px 24px rgba(0,0,0,.5); }
+#mathlabel { font-size:12px; font-weight:600; margin-bottom:6px; }
+#mathchips { margin:0; }
+#mathchips button { padding:6px 0; font-size:12px; font-weight:500; color:#c9ced8; }
+#mathchips button[aria-checked=true] { background:#2f6bff; color:#fff; }
+#prefs .prefhelp { color:#98a0ae; font-size:11px; line-height:1.4; margin-top:7px; }
+/* The challenge covers the whole card, so nothing behind it can be clicked. */
+#gate { position:fixed; top:0; left:0; right:0; bottom:0; z-index:5; box-sizing:border-box; background:#16171d; padding:24px 32px; display:flex; flex-direction:column; justify-content:center; text-align:center; }
+#gatetitle { font-size:17px; font-weight:650; }
+#gateprogress { color:#98a0ae; font-size:12px; margin:4px 0 22px; }
+#gatequestion { font-size:19px; line-height:1.4; font-weight:500; min-height:54px; }
+#gateentry { display:flex; gap:8px; justify-content:center; margin:18px 0 10px; }
+#gateanswer { width:150px; box-sizing:border-box; background:#0f1014; border:1px solid #3a3f4e; border-radius:8px; color:#fff; font-family:inherit; font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; text-align:center; padding:8px 10px; user-select:text; }
+#gateanswer:focus { outline:none; border-color:#5b8cff; }
+#gatecheck { background:#2f6bff; padding:8px 18px; font-size:15px; }
+#gatecheck:hover { background:#3d78ff; }
+#gatefeedback { min-height:36px; font-size:12px; line-height:1.5; color:#98a0ae; }
+#gatefeedback.wrong { color:#ffb4ad; }
+#gatecancel { align-self:center; background:transparent; color:#98a0ae; font-weight:500; font-size:12px; padding:6px 10px; margin-top:8px; }
+#gatecancel:hover { color:#fff; background:#2a2d38; }
 </style></head><body>
+<button id="gear" title="Settings" aria-label="Settings" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="5.1"/><circle cx="10" cy="10" r="1.9"/><path d="M10 1.6v2.2M10 16.2v2.2M1.6 10h2.2M16.2 10h2.2M4.06 4.06l1.56 1.56M14.38 14.38l1.56 1.56M4.06 15.94l1.56-1.56M14.38 5.62l1.56-1.56"/></svg></button>
+<div id="prefs" class="hidden" role="group" aria-labelledby="mathlabel">
+<div id="mathlabel">Math to snooze</div>
+<div class="chips" id="mathchips" role="radiogroup" aria-labelledby="mathlabel"></div>
+<div class="prefhelp">Solve this many quick money-math problems before Snooze or Disable takes effect.</div>
+</div>
 <h1>__TITLE__</h1>
 <div class="sub">__SUB__</div>
 __CTA__
@@ -652,15 +1118,25 @@ __CTA__
 </div>
 <button id="customopt" role="menuitem">Custom&hellip;</button>
 <div id="customrow" class="hidden">
-<input id="custommin" type="number" min="1" max="720" placeholder="minutes">
+<input id="custommin" type="text" maxlength="40" placeholder="45m, 1.5h, 2 hours" aria-label="Custom snooze length, in minutes or hours" aria-describedby="customerror" autocomplete="off" spellcheck="false">
 <button id="customgo">Go</button>
 </div>
+<div id="customerror" class="hidden" role="status" aria-live="polite"></div>
 </div>
 </div>
 <button id="dismiss">__DISMISS__</button>
 <button id="disable">__DISABLELABEL__</button>
 </div>
 <div class="esc">Esc closes this</div>
+<div id="gate" class="hidden" role="dialog" aria-modal="true" aria-labelledby="gatetitle">
+<div id="gatetitle"></div>
+<div id="gateprogress"></div>
+<div id="gatequestion"></div>
+<div id="gateentry"><input id="gateanswer" type="text" inputmode="decimal" maxlength="16" autocomplete="off" spellcheck="false" aria-label="Your answer"><button id="gatecheck">Check</button></div>
+<div id="gatefeedback" role="status" aria-live="polite"></div>
+<button id="gatecancel">Never mind</button>
+<div class="esc">Answers are whole numbers. Digits typed here don't use your allowance. Esc cancels.</div>
+</div>
 <script>
 var stops=[15,30,45,60,90,120,180,240,300,-1];
 var threshold=__SECONDS__;
@@ -748,7 +1224,8 @@ if(w){ w.addEventListener('click',function(){ send({action:'dictate'}); }); }
 var menu=document.getElementById('snoozemenu');
 var customrow=document.getElementById('customrow');
 var custommin=document.getElementById('custommin');
-function hideSnoozeMenu(){ menu.classList.add('hidden'); customrow.classList.add('hidden'); }
+var customError=document.getElementById('customerror');
+function hideSnoozeMenu(){ menu.classList.add('hidden'); customrow.classList.add('hidden'); customError.classList.add('hidden'); }
 unsnooze.addEventListener('click',function(){ send({action:'unsnooze'}); });
 document.getElementById('snooze').addEventListener('click',function(){ send({action:'snooze', minutes:__SNOOZE__}); });
 document.getElementById('snoozemore').addEventListener('click',function(e){
@@ -764,10 +1241,17 @@ document.getElementById('customopt').addEventListener('click',function(e){
   customrow.classList.remove('hidden');
   custommin.focus();
 });
+// The length is parsed in Lua (minutes and hours only); it answers with
+// snoozeError() when it can't read what was typed.
 function goCustom(){
-  var m=parseInt(custommin.value,10);
-  if(m>=1&&m<=720){ send({action:'snooze', minutes:m}); } else { custommin.focus(); }
+  if(custommin.value.trim()){ customError.classList.add('hidden'); send({action:'snooze', text:custommin.value}); } else { custommin.focus(); }
 }
+function snoozeError(error){
+  menu.classList.remove('hidden'); customrow.classList.remove('hidden');
+  customError.textContent=error.message; customError.classList.remove('hidden');
+  custommin.focus(); custommin.select();
+}
+custommin.addEventListener('input',function(){ customError.classList.add('hidden'); });
 document.getElementById('customgo').addEventListener('click',goCustom);
 custommin.addEventListener('keydown',function(e){ if(e.key==='Enter'){ goCustom(); } });
 document.addEventListener('click',function(e){
@@ -777,11 +1261,57 @@ document.getElementById('dismiss').addEventListener('click',function(){
   if(commitDuration()) send({action:'close'}); else v.focus();
 });
 document.getElementById('disable').addEventListener('click',function(){ send({action:'disable'}); });
+var gear=document.getElementById('gear'), prefs=document.getElementById('prefs');
+function setPrefsOpen(open){ prefs.classList.toggle('hidden',!open); gear.setAttribute('aria-expanded',String(open)); }
+gear.addEventListener('click',function(e){ e.stopPropagation(); hideSnoozeMenu(); setPrefsOpen(prefs.classList.contains('hidden')); });
+document.addEventListener('click',function(e){
+  if(!prefs.classList.contains('hidden') && !e.target.closest('#prefs')) setPrefsOpen(false);
+});
+var mathCount=__MATHCOUNT__, mathChips=document.getElementById('mathchips');
+function renderMath(){
+  mathChips.querySelectorAll('button').forEach(function(b){ b.setAttribute('aria-checked',String(+b.dataset.g===mathCount)); });
+  gear.classList.toggle('on',mathCount>0);
+  gear.title=mathCount>0?'Settings (math to snooze: '+mathCount+')':'Settings';
+}
+(function(){
+  var options=[0,1,2,3,5];
+  if(options.indexOf(mathCount)<0){ options.push(mathCount); options.sort(function(a,b){ return a-b; }); }
+  options.forEach(function(n){
+    var b=document.createElement('button');
+    b.textContent=n?String(n):'Off'; b.dataset.g=n; b.setAttribute('role','radio');
+    b.addEventListener('click',function(){ mathCount=n; renderMath(); send({action:'setGate', value:n}); });
+    mathChips.appendChild(b);
+  });
+  renderMath();
+})();
+// Snooze gate. Lua owns the problems and checks the answers; this only
+// renders the view it is sent (null = no challenge) and posts what was typed.
+var gate=document.getElementById('gate'), gateAnswer=document.getElementById('gateanswer');
+var gateQuestion=document.getElementById('gatequestion'), gateFeedback=document.getElementById('gatefeedback');
+function showGate(view){
+  if(!view){ gate.classList.add('hidden'); return; }
+  hideSnoozeMenu(); setPrefsOpen(false);
+  document.getElementById('gatetitle').textContent=view.title;
+  document.getElementById('gateprogress').textContent='Problem '+view.index+' of '+view.total;
+  if(gateQuestion.textContent!==view.question){ gateQuestion.textContent=view.question; gateAnswer.value=''; }
+  gateFeedback.textContent=view.feedback;
+  gateFeedback.classList.toggle('wrong',!!view.wrong);
+  gate.classList.remove('hidden');
+  gateAnswer.focus(); gateAnswer.select();
+}
+function submitGate(){
+  if(gateAnswer.value.trim()){ send({action:'gateAnswer', value:gateAnswer.value}); } else { gateAnswer.focus(); }
+}
+document.getElementById('gatecheck').addEventListener('click',submitGate);
+gateAnswer.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); submitGate(); } });
+document.getElementById('gatecancel').addEventListener('click',function(){ send({action:'gateCancel'}); });
+showGate(__GATEVIEW__);
 </script></body></html>
 ]]
 
 closePanel = function()
   stopPanelRing()
+  gate = nil
   if _G.dictationNudgePanel then
     pcall(function() _G.dictationNudgePanel:delete() end)
     _G.dictationNudgePanel = nil
@@ -800,8 +1330,9 @@ local function setThreshold(value)
   log.i("Threshold set to " .. fmtThreshold(value))
 end
 
-openPanel = function(mode)
+openPanel = function(mode, pendingAction)
   closePanel()
+  if pendingAction and snoozeMathCount() > 0 then gate = newGate(pendingAction) end
 
   local isNudge = (mode == "nudge")
   local f = hs.screen.mainScreen():frame()
@@ -818,17 +1349,34 @@ openPanel = function(mode)
       startDictation()
       closePanel()
     elseif body.action == "snooze" then
-      -- The card only ever sends a valid length; anything else is ignored.
-      if type(body.minutes) == "number" and body.minutes >= 1 and body.minutes <= SNOOZE_MAX_MINUTES then
-        startSnooze(body.minutes)
-        closePanel()
+      -- A typed length is parsed here; a preset arrives as minutes. Anything
+      -- else is ignored and the card stays open.
+      if type(body.text) == "string" then
+        local minutes, reason = parseSnoozeLength(body.text)
+        if minutes then
+          requestGated({ kind = "snooze", minutes = minutes })
+        else
+          pushCard("snoozeError(" .. hs.json.encode({ message = reason }) .. ")")
+        end
+      elseif type(body.minutes) == "number" and body.minutes >= 1 and body.minutes <= SNOOZE_MAX_MINUTES then
+        requestGated({ kind = "snooze", minutes = body.minutes })
       end
     elseif body.action == "unsnooze" then
       -- Card stays open: the ring timer flips the status back to live within 250ms.
       if snoozeRemaining() then cancelSnooze() end
     elseif body.action == "disable" then
-      toggleDisabled()
-      closePanel()
+      if _G.dictationNudgeDisabled then -- turning the nudge back on is never gated
+        toggleDisabled()
+        closePanel()
+      else
+        requestGated({ kind = "disable" })
+      end
+    elseif body.action == "gateAnswer" then
+      answerGate(body.value)
+    elseif body.action == "gateCancel" then
+      cancelGate()
+    elseif body.action == "setGate" then
+      setSnoozeMathCount(body.value)
     elseif body.action == "close" then
       closePanel()
     end
@@ -870,6 +1418,11 @@ openPanel = function(mode)
     :gsub("__SNOOZE__", config.snoozeMinutes)
     :gsub("__DISMISS__", dismiss)
     :gsub("__DISABLELABEL__", _G.dictationNudgeDisabled and "Enable" or "Disable")
+    :gsub("__MATHCOUNT__", snoozeMathCount())
+    :gsub("__GATEVIEW__", function()
+      local view = gateView()
+      return view and hs.json.encode(view) or "null"
+    end)
 
   _G.dictationNudgePanel = hs.webview.new(rect, {}, ucc)
     -- no "utility": utility panels (NSPanel) auto-hide as soon as
@@ -889,6 +1442,7 @@ openPanel = function(mode)
     :windowCallback(function(action, panel)
       if action == "closing" and panel == _G.dictationNudgePanel then
         stopPanelRing()
+        gate = nil
         _G.dictationNudgePanel = nil
         _G.dictationNudgePanelVisible = false
       end
@@ -969,6 +1523,23 @@ local function isResetChord(flags)
   return true
 end
 
+-- Keys needed to answer a snooze-gate problem: digits, separators, delete,
+-- Return. While a problem is showing they are invisible, like Tab or the
+-- arrows, so answering never spends allowance. Letters still count, so a
+-- problem left on screen is not a free pass to keep typing.
+local gateAnswerKeycodes = {}
+do
+  local names = {".", ",", "-", "delete", "forwarddelete", "return", "padenter", "pad.", "pad-"}
+  for digit = 0, 9 do
+    table.insert(names, tostring(digit))
+    table.insert(names, "pad" .. digit)
+  end
+  for _, name in ipairs(names) do
+    local code = hs.keycodes.map[name]
+    if code then gateAnswerKeycodes[code] = true end
+  end
+end
+
 -- A "typing key" is a genuine, intentional text-producing press.
 local function isTypingKey(event)
   -- held key: macOS re-sends keyDown with autorepeat set; never counts
@@ -1020,6 +1591,9 @@ local function onKeyDown(event)
   -- Not a typing key (autorepeat/held, ⌘⌃ shortcut, F-key, arrow, Tab, extras):
   -- invisible. It doesn't count toward the burst and doesn't break it.
   if not isTypingKey(event) then return false end
+
+  -- Answering a snooze-gate problem: the answer keys are invisible too.
+  if gate and gateAnswerKeycodes[event:getKeyCode()] then return false end
 
   -- Snoozed or switched off ("Never"): pass through, track nothing.
   if snoozeRemaining() then return false end
@@ -1106,6 +1680,12 @@ function M.start(userConfig)
   local savedSnooze = hs.settings.get(config.snoozeSettingsKey)
   if type(savedSnooze) == "number" and savedSnooze >= 1 and savedSnooze <= SNOOZE_MAX_MINUTES then
     config.snoozeMinutes = math.floor(savedSnooze)
+  end
+
+  -- persisted snooze-gate count (set on the card) wins over defaults/args
+  local savedMath = hs.settings.get(config.snoozeMathSettingsKey)
+  if type(savedMath) == "number" and savedMath >= 0 and savedMath <= SNOOZE_MATH_MAX then
+    config.snoozeMathProblems = math.floor(savedMath)
   end
 
   rebuildExcludedKeycodes()
@@ -1231,7 +1811,7 @@ function dictationNudgeStatus()
   local lastKeyAge = _G.dictationNudgeLastKeyAt and (now() - _G.dictationNudgeLastKeyAt) or nil
   local rem = snoozeRemaining()
   return string.format(
-    "tap=%s threshold=%s used=%s lastCountedKeyAge=%s lockdown=%s snooze=%s card=%s disabled=%s",
+    "tap=%s threshold=%s used=%s lastCountedKeyAge=%s lockdown=%s snooze=%s card=%s disabled=%s snoozeMath=%s",
     tostring(tapRunning),
     fmtThreshold(config.nudgeAfterSeconds),
     string.format("%.1fs", typingUsedSeconds(now())),
@@ -1239,7 +1819,8 @@ function dictationNudgeStatus()
     (_G.dictationNudgeLockdownUntil and _G.dictationNudgeLockdownUntil > now()) and "ACTIVE" or "off",
     rem and string.format("%dm left", math.ceil(rem / 60)) or "off",
     _G.dictationNudgePanelVisible and "open" or "closed",
-    tostring(_G.dictationNudgeDisabled == true)
+    tostring(_G.dictationNudgeDisabled == true),
+    snoozeMathCount() == 0 and "off" or (snoozeMathCount() .. (gate and " (solving)" or ""))
   )
 end
 
@@ -1250,6 +1831,9 @@ M._internal = {
   ringState = panelRingState,
   isTypingKey = isTypingKey,
   onInputEvent = onInputEvent,
+  moneyMath = MoneyMath,
+  parseSnoozeLength = parseSnoozeLength,
+  gate = function() return gate end,
 }
 
 return M
