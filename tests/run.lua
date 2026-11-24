@@ -256,6 +256,22 @@ test("the test URL and console helper preview the card without arming anything",
   end
 end)
 
+test("a log line that raises cannot cost the nudge card or the overlay", function()
+  local env = load()
+  env.logRaises = true
+  env.type(121, STEP)
+  eq(env.openPanels(), 1, "nudge card still opens")
+  eq(env.sounds, 1, "sound still plays")
+  env.cardMessage({ action = "close" })
+  env.type(97, STEP)
+  eq(env.liveCanvases(), 1, "overlay still drawn")
+  eq(env.key("escape"), true, "Esc still ends the lockdown")
+  eq(env.liveCanvases(), 0, "overlay gone")
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "set", value = 45 })
+  eq(env.settings["dictationNudge.nudgeAfterSeconds"], 45, "settings still save")
+end)
+
 test("a pause after tier 1 calls off the escalation", function()
   local env = load()
   env.type(121, STEP)

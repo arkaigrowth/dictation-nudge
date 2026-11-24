@@ -58,7 +58,7 @@ It never asks an event for the characters it would produce.
 
 **What the card's own text fields send.** The card has three fields you can type in: the limit, a custom snooze length, and the answer to a snooze-gate problem. That text does not come from the event tap. It is ordinary text in the card's web view, and the card hands the module the limit as a number and the other two as the text you typed. The module parses a snooze length into minutes, compares an answer with the expected number, and keeps neither string. While a snooze-gate challenge is open it holds that challenge's problems and your place in it; closing the card discards them.
 
-**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit or snooze-gate count changed, dictation URL requested. Typing itself logs nothing. The text you type into the card's fields is never written to the log either; the snooze or setting change it leads to is logged like any other.
+**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit or snooze-gate count changed, dictation URL requested. Typing itself logs nothing. Logging is best effort: if Hammerspoon cannot print a line, the module carries on without it. The text you type into the card's fields is never written to the log either; the snooze or setting change it leads to is logged like any other.
 
 **What goes to disk.** Three preferences, through `hs.settings`: your allowance, your last snooze length, and the snooze-gate problem count.
 
@@ -216,7 +216,7 @@ Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (
 ```bash
 brew install lua@5.4
 "$(brew --prefix lua@5.4)/bin/lua" tests/run.lua
-# 77 tests, 77 passed, 0 failed
+# 78 tests, 78 passed, 0 failed
 ```
 
 The suite needs only Lua 5.4, the version Hammerspoon embeds, and I have not run it on any other. Homebrew's `lua@5.4` is not put on your `PATH`, hence the full path above; if your own `lua` is already 5.4, `lua tests/run.lua` is enough. It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.

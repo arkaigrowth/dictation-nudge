@@ -76,13 +76,14 @@
 --   Set "Math to snooze" under the card's gear (or `snoozeMathProblems` in
 --   config) to 1 or more, and Snooze and Disable first show that many
 --   short money-math problems: tips, discounts, interest, the rule of 72,
---   runway, fees. The snooze starts
---   only after the last correct answer. Esc or "Never mind" drops it.
+--   runway, fees. The snooze starts only after the last correct answer.
+--   Esc or "Never mind" drops it.
 --   "Tip" shows the mental-math shortcut for that kind of problem.
 --   It is friction for a reflex, not a lock: ending a snooze, re-enabling,
 --   the allowance slider, and the setting itself are never gated.
---   While a problem is showing, digit keys don't spend allowance. The answer
---   box is the card's own text field; the event tap still reads no characters.
+--   While a problem is showing, the keys that answer it (digits, period,
+--   comma, minus, Delete, Return) don't spend allowance. The answer box is
+--   the card's own text field; the event tap still reads no characters.
 --
 -- Requires Accessibility AND Input Monitoring for Hammerspoon
 -- (System Settings -> Privacy & Security). A missing Input Monitoring
@@ -94,7 +95,17 @@
 
 local M = {}
 
-local log = hs.logger.new("dictation_nudge", "info")
+-- Logging is best effort and must never break input handling. hs.logger
+-- writes through print(), and print() can raise: for example, for up to a
+-- minute after an `hs` command line client dies without unregistering. A
+-- raised log line in the key handler would skip everything after it.
+local log = {}
+do
+  local logger = hs.logger.new("dictation_nudge", "info")
+  for _, level in ipairs({ "i", "w", "e" }) do
+    log[level] = function(...) pcall(logger[level], ...) end
+  end
+end
 
 -- ═══ Config (override via start({...})) ═══
 local DEFAULTS = {

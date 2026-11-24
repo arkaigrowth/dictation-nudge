@@ -158,7 +158,10 @@ function Stub.new()
   local hs = {}
 
   hs.logger = { new = function()
-    local function record(level) return function(message) table.insert(env.logs, level .. ": " .. tostring(message)) end end
+    local function record(level) return function(message)
+      if env.logRaises then error("print is broken") end -- what a dead hs client does to print()
+      table.insert(env.logs, level .. ": " .. tostring(message))
+    end end
     return { i = record("info"), w = record("warn"), e = record("error"), d = record("debug") }
   end }
 
