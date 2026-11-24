@@ -73,7 +73,7 @@ Everything else passes through untouched, including modifier keys on their own a
 
 **Where macOS overrides all of this.** While secure input is on (password fields are meant to turn it on), macOS does not deliver key events to event taps at all. So this module cannot see what you type there, and for the same reason the lockdown does not block typing there and Esc cannot dismiss it from there. That behavior belongs to macOS, not to this code.
 
-**What this does not cover.** The permissions belong to Hammerspoon, not to this module. Once Hammerspoon has Accessibility and Input Monitoring, any Lua in your Hammerspoon config can read your keystrokes. This module is about 1,800 lines in one file; read it before you trust it, and treat the rest of your config the same way.
+**What this does not cover.** The permissions belong to Hammerspoon, not to this module. Once Hammerspoon has Accessibility and Input Monitoring, any Lua in your Hammerspoon config can read your keystrokes. This module is about 2,000 lines in one file; read it before you trust it, and treat the rest of your config the same way.
 
 ## Install
 
