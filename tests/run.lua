@@ -555,13 +555,63 @@ end)
 test("gate on: a challenge the card cannot show closes the card instead of lingering", function()
   local env = load({ snoozeMathProblems = 1 })
   _G.dictationNudgeSettings()
-  env.jsResult = nil            -- the card's web content has died: no acknowledgement
+  env.jsResult = false          -- the card's web content has died: no acknowledgement
   env.cardMessage({ action = "snooze", minutes = 10 })
   eq(env.internal.gate(), nil, "no challenge left behind")
   eq(env.openPanels(), 0, "card closed")
   assert(not isSnoozed(), "not snoozed")
   env.type(9, STEP, "5")
   near(env.used(), 1.0, "digits count as typing again")
+end)
+
+test("gate on: a late failure from an earlier challenge does not close the one showing", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.settle()
+  env.deferJS = true
+  env.cardMessage({ action = "snooze", minutes = 10 })   -- challenge A; its acknowledgement is pending
+  local first = #env.pendingJS
+  nevermind(env)
+  env.cardMessage({ action = "snooze", minutes = 10 })   -- challenge B
+  local current = env.internal.gate()
+  env.pendingJS[#env.pendingJS](true)                    -- B is acknowledged
+  env.pendingJS[first](false)                            -- A's render reports failure, late
+  eq(env.internal.gate(), current, "challenge B survives")
+  eq(env.openPanels(), 1, "card still open")
+  env.pendingJS[#env.pendingJS](false)                   -- B itself failing does close it
+  eq(env.internal.gate(), nil, "a failure of the current challenge drops it")
+  eq(env.openPanels(), 0, "and closes the card")
+end)
+
+test("gate on: a page that dies while a problem is up closes the card", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  assert(env.internal.gate(), "challenge showing")
+  env.advance(2)                -- healthy page: the ring keeps checking and nothing changes
+  assert(env.internal.gate(), "still showing")
+  eq(env.openPanels(), 1, "card open")
+  env.jsResult = false          -- the web content dies
+  env.advance(0.5)
+  eq(env.internal.gate(), nil, "challenge dropped")
+  eq(env.openPanels(), 0, "card closed")
+  env.type(9, STEP, "5")
+  near(env.used(), 1.0, "digits count as typing again")
+end)
+
+test("gate on: a card whose page fails to load drops its challenge", function()
+  local env = load({ snoozeMathProblems = 1 })
+  env.holdNavigation = true
+  env.urlBinds["dictationNudgeSnooze"]()
+  assert(env.internal.gate(), "challenge waiting for the page")
+  env.failNavigation()
+  eq(env.internal.gate(), nil, "challenge dropped")
+  eq(env.openPanels(), 0, "card closed")
+  local plain = load()
+  plain.holdNavigation = true
+  _G.dictationNudgeSettings()
+  plain.failNavigation()
+  eq(plain.openPanels(), 1, "without a challenge a failed load is left alone")
 end)
 
 test("gate on: the free answer keys follow the keyboard layout", function()
@@ -766,7 +816,7 @@ test("typed snooze lengths: minutes and hours in the usual spellings", function(
     ["2h"] = 120, ["2 h"] = 120, ["1 hour"] = 60, ["3 hours"] = 180, ["2 hrs"] = 120, ["1hr"] = 60,
     ["1.5h"] = 90, ["1.5 hours"] = 90, ["0.5h"] = 30, [".5h"] = 30, ["0.25 hours"] = 15, ["0.1h"] = 6, ["1.50000000h"] = 90, ["60.0"] = 60, ["1h,30m"] = 90,
     ["1 hour, 30"] = 90, ["an hour and 5 minutes"] = 65, ["000045"] = 45, ["0001:30"] = 90, ["01h 05m"] = 65,
-    ["1h .0m"] = 60, ["1.025h 0.5m"] = 62, ["0.5h 30.0"] = 60,
+    ["1h .0m"] = 60, ["1.025h 0.5m"] = 62, ["0.5h 30.0"] = 60, ["1.025h and .5m"] = 62, ["1.025h, .5m"] = 62,
     ["1h30"] = 90, ["1h 30"] = 90, ["1h30m"] = 90, ["1h 30m"] = 90, ["1 hr, 15 min"] = 75,
     ["1 hour 30 minutes"] = 90, ["1 hour and 30 minutes"] = 90, ["2 hours and 5 minutes"] = 125,
     ["1:30"] = 90, ["0:45"] = 45, ["12:00"] = 720,
@@ -793,7 +843,9 @@ test("typed snooze lengths: days and longer are refused, and so is anything uncl
   for _, text in ipairs({ "", "   ", "soon", "tomorrow", "h", "m", "-5", "1e3", "1h 1h", "30m 1h", "30m 15",
     "1h30m15", "30 1h", "1:5", "1:75", "1:30:00", "1,5h", "ninety", "30m and a half", "and a half", "1 lightyear",
     "1 and h", "1h,,,30m", "1h, , 30m", ",1h", "1h,", "1h and", "and 1h", "1 and 30", "1h and and 30m", "1h , 30m",
-    "4611686018427387905:00", "1:30pm", "h1", "1hh", "1 h m" }) do
+    "4611686018427387905:00", "1:30pm", "h1", "1hh", "1 h m",
+    -- more than four decimal places is not read, whatever it might add up to
+    "59.9999999", "0.9999999h", "1.00000001h", "89.99999999999999", "1.000001m", "1.000001h .99994m" }) do
     local got, reason = parse(text)
     eq(got, nil, "'" .. text .. "' refused")
     eq(reason, help, "'" .. text .. "' reason")
@@ -804,8 +856,7 @@ test("typed snooze lengths: days and longer are refused, and so is anything uncl
     eq(got, nil, "'" .. text .. "' refused")
     eq(reason, "Snooze can be 1 minute to 12 hours.", "'" .. text .. "' reason")
   end
-  for _, text in ipairs({ "1.5", "1.5m", "0.01h", "1.33 hours", "59.9999999", "0.9999999h", "1.00000001h",
-    "89.99999999999999", "1.000001m", "1.025h", "1.025h 0.4m" }) do
+  for _, text in ipairs({ "1.5", "1.5m", "0.01h", "1.33 hours", "59.9999", "0.9999h", "1.025h", "1.025h 0.4m" }) do
     local got, reason = parse(text)
     eq(got, nil, "'" .. text .. "' refused")
     eq(reason, "Use a whole number of minutes.", "'" .. text .. "' reason")
@@ -857,8 +908,8 @@ test("money math: one hand-worked case per template", function()
     { "tip",                { 3, 2 },    9,       "15% of $60" },
     { "discount",           { 3, 3 },    60,      "$80 less 25%" },
     { "sales_tax",          { 2, 2 },    44,      "$40 plus 10%" },
-    { "percent_change",     { 4, 3, 1 }, 25,      "$80 to $100" },
-    { "percent_change",     { 4, 3, 2 }, 25,      "$80 to $60" },
+    { "percent_change",     { 3, 3, 1 }, 25,      "$80 to $100" },
+    { "percent_change",     { 3, 3, 2 }, 25,      "$80 to $60" },
     { "rule_of_72",         { 5, 1 },    9,       "72 / 8" },
     { "rule_of_72",         { 4, 2 },    6,       "double in 12 years" },
     { "card_interest",      { 2, 3 },    40,      "$2,000 at 24% APR for a month" },
@@ -874,7 +925,7 @@ test("money math: one hand-worked case per template", function()
     { "employer_match",     { 2, 2 },    2400,    "4% of $60,000" },
     { "compound_two_years", { 1, 1 },    1210,    "$1,000 at 10%, twice" },
     { "compound_two_years", { 1, 2 },    1440,    "$1,000 at 20%, twice" },
-    { "profit_margin",      { 4, 2 },    20,      "cost $80, sale $100" },
+    { "profit_margin",      { 2, 2 },    20,      "cost $64, sale $80" },
     { "runway",             { 3, 2 },    6,       "$24,000 at $4,000 a month" },
     { "payback",            { 3, 4 },    12,      "$300 at $25 a month" },
     { "fee_drag",           { 3, 1 },    2000,    "1% of $200,000" },
@@ -899,7 +950,7 @@ test("money math: one hand-worked case per template", function()
   end
   eq((byName.split_with_tip.make(scripted({ 3, 3 }))),
     "$80 dinner plus a 20% tip, split 4 ways. What does each person pay?", "wording")
-  eq((byName.percent_change.make(scripted({ 4, 3, 2 }))),
+  eq((byName.percent_change.make(scripted({ 3, 3, 2 }))),
     "A stock goes from $80 to $60. Percent drop?", "wording")
 end)
 
@@ -932,27 +983,13 @@ test("money math: every possible problem has a positive whole-number answer", fu
       end
       assert(not question:find("%d%.%d"), "fractional number in the question, " .. where)
       assert(not (question .. hint):find("\226\128\148"), "em dash, " .. where)
-      -- The hint gives the method. It must not state the answer in the unit the
-      -- question asks for: "25%" when it asks for a percent, "$25" otherwise.
-      local shown = " " .. hint:gsub("[%.%?]$", "") .. " "
-      if question:lower():find("percent", 1, true) then
-        assert(not shown:find("%f[%S]" .. string.format("%d", answer) .. "%%%f[%s%.]"),
-          "hint states the answer as a percent, " .. where .. " | " .. hint)
-      else
-        assert(not shown:find("%f[%S]" .. bank.money(answer):gsub("%$", "%%$") .. "%f[%s%.]"),
-          "hint states the answer in dollars, " .. where .. " | " .. hint)
-        for _, bare in ipairs({ string.format("%d", answer), (bank.money(answer):gsub("%$", "")) }) do
-          assert(not shown:find("%f[%S]" .. bare .. "%f[%s%.]"), "hint states the answer as a bare number, " .. where .. " | " .. hint)
-        end
-      end
-      -- Same rule for the Tip button's shortcut, which is fixed per kind of problem.
-      local tip = " " .. template.tip:gsub("[%.%?]$", "") .. " "
-      if question:lower():find("percent", 1, true) then
-        assert(not tip:find("%f[%S]" .. string.format("%d", answer) .. "%%%f[%s%.]"), "tip states the answer as a percent, " .. where)
-      else
-        assert(not tip:find("%f[%S]" .. bank.money(answer):gsub("%$", "%%$") .. "%f[%s%.]"), "tip states the answer in dollars, " .. where)
-        for _, bare in ipairs({ string.format("%d", answer), (bank.money(answer):gsub("%$", "")) }) do
-          assert(not tip:find("%f[%S]" .. bare .. "%f[%s%.]"), "tip states the answer as a bare number, " .. where .. " | " .. template.tip)
+      -- A hint or tip gives the method. No number in it may be something the
+      -- card would accept as the answer, in any format ("$25", "25%", "25").
+      for label, text in pairs({ hint = hint, tip = template.tip }) do
+        for token in text:gmatch("%$?%d[%d,%.]*%%?") do
+          token = token:gsub("[%.,]+$", ""):gsub("[%.,]+%%$", "%%")
+          assert(not bank.isCorrect({ answer = answer }, token),
+            label .. " contains the answer (" .. token .. "), " .. where .. " | " .. text)
         end
       end
       assert(bank.isCorrect({ answer = answer }, string.format("%d", answer)), "own answer rejected, " .. where)

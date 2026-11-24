@@ -266,7 +266,8 @@ end
 -- Every template takes pick(list) -> one element, and returns
 --   question (string), answer (whole number), hint (string shown after a miss).
 -- `tip` is the mental-math shortcut for that kind of problem, shown when the
--- Tip button is pressed. A hint uses the problem's numbers; a tip never does.
+-- Tip button is pressed. A hint uses the problem's numbers. A tip is fixed for
+-- its template: it may name common rates and rule constants, never an answer.
 -- Parameter lists are chosen so every answer is a whole number you can reach
 -- in your head. If you add a template, keep that property: the tests draw
 -- every template thousands of times and fail on a fractional answer.
@@ -285,7 +286,7 @@ local TEMPLATES = {
   { name = "tip",
     tip = "10% = move the decimal one place left. 5% = half of that. 15% = 10% + 5%. 20% = 10% doubled.",
     make = function(pick)
-      local bill, pct = pick({20, 40, 60, 80, 100, 120, 140, 160}), pick({10, 15, 20})
+      local bill, pct = pick({20, 40, 60, 80, 120, 140, 160}), pick({10, 15, 20})
       return string.format("%d%% tip on a %s bill. Tip in dollars?", pct, money(bill)),
         bill * pct / 100,
         pct == 10 and "10% is the bill with the decimal point moved one place left."
@@ -311,9 +312,9 @@ local TEMPLATES = {
     end },
 
   { name = "percent_change",
-    tip = "Change ÷ where it started. Then reduce the fraction: a half, a quarter, a fifth, a tenth.",
+    tip = "Divide the size of the change by the starting price. Simplify the fraction, then turn it into a percent.",
     make = function(pick)
-      local old, pct, up = pick({20, 40, 60, 80, 100, 200}), pick({10, 20, 25, 50}), pick({true, false})
+      local old, pct, up = pick({40, 60, 80, 200}), pick({10, 20, 25, 50}), pick({true, false})
       local change = old * pct / 100
       local new = up and old + change or old - change
       return string.format("A stock goes from %s to %s. Percent %s?", money(old), money(new), up and "gain" or "drop"),
@@ -322,7 +323,7 @@ local TEMPLATES = {
     end },
 
   { name = "rule_of_72",
-    tip = "Years to double ≈ 72 ÷ rate. It runs backward too: rate ≈ 72 ÷ years.",
+    tip = "Years to double ≈ 72 ÷ the rate in percent. Backward: rate in percent ≈ 72 ÷ years.",
     make = function(pick)
       local rate = pick({2, 3, 4, 6, 8, 9, 12})
       if pick({true, false}) then
@@ -374,7 +375,7 @@ local TEMPLATES = {
     end },
 
   { name = "savings_rate",
-    tip = "Saved ÷ take-home. Find a tenth of take-home, then count how many tenths you saved.",
+    tip = "Saved ÷ take-home. Count the tenths of take-home you saved, half tenths included, then multiply by ten.",
     make = function(pick)
       local income, pct = pick({4000, 5000, 6000, 8000}), pick({5, 10, 15, 20, 25})
       local saved = income * pct / 100
@@ -428,7 +429,7 @@ local TEMPLATES = {
   { name = "profit_margin",
     tip = "Margin = profit ÷ sale price. Markup = profit ÷ cost. Same profit, different base.",
     make = function(pick)
-      local sale, margin = pick({20, 40, 80, 100, 200}), pick({10, 20, 25, 40, 50})
+      local sale, margin = pick({60, 80, 120, 200}), pick({10, 20, 25, 40, 50})
       local cost = sale - sale * margin / 100
       return string.format("Buy for %s, sell for %s. Profit margin, as a percent of the sale price?", money(cost), money(sale)),
         margin,
@@ -454,7 +455,7 @@ local TEMPLATES = {
     end },
 
   { name = "fee_drag",
-    tip = "1% of anything = drop two zeros. A fee repeats every year, so small percents add up.",
+    tip = "1% = move the decimal two places left. Multiply by the fee percent. The fee repeats every year.",
     make = function(pick)
       local balance, fee = pick({50000, 100000, 200000, 400000}), pick({1, 2})
       return string.format("A fund charges a %d%% fee each year. On a %s balance, how many dollars a year?", fee, money(balance)),
@@ -469,7 +470,7 @@ local TEMPLATES = {
       local drop = pick({20, 50, 60, 75, 80})
       return string.format("A stock falls %d%%. What percent gain gets it back to even?", drop),
         drop * 100 / (100 - drop),
-        string.format("$100 becomes %s. Getting back needs %s more, on a base of %s.", money(100 - drop), money(drop), money(100 - drop))
+        string.format("You have %d%% left. Winning back the %d%% you lost is a gain on that smaller base.", 100 - drop, drop)
     end },
 
   { name = "real_return",
@@ -688,7 +689,7 @@ local function minuteParts(number, scale)
   whole = whole:gsub("^0+", "")
   fraction = fraction:gsub("0+$", "")
   if #whole > 4 then return nil, SNOOZE_RANGE end
-  if #fraction > 4 then return nil, SNOOZE_WHOLE end
+  if #fraction > 4 then return nil, SNOOZE_HELP end
   local digits = whole .. fraction
   return (digits == "" and 0 or tonumber(digits)) * scale * math.tointeger(10 ^ (4 - #fraction))
 end
@@ -711,7 +712,7 @@ local function parseSnoozeLength(text)
     if head then s, plusHalf = head, true end
     -- "and" and "," are read only between the hours and the minutes
     -- ("1 hour and 30 minutes", "1 hr, 15 min"); anywhere else they refuse.
-    s = s:gsub("(%a) and (%d)", "%1 %2"):gsub("(%a), ?(%d)", "%1 %2"):gsub("^an? ", "1 ")
+    s = s:gsub("(%a) and ([%d%.])", "%1 %2"):gsub("(%a), ?([%d%.])", "%1 %2"):gsub("^an? ", "1 ")
     if s:find(",", 1, true) then return nil, SNOOZE_HELP end
 
     -- One hours term, then one minutes term, each optional, in that order.
@@ -906,11 +907,12 @@ local function pushCard(script, onFailure)
 end
 
 -- A challenge the card cannot show (its web content died, say) must not stay
--- alive in here: close the card, which drops the challenge with it.
+-- alive in here: close the card, which drops the challenge with it. A late
+-- failure for an earlier challenge must not close the one showing now.
 local function pushGate(feedback, wrong)
   local view = gateView(feedback, wrong)
   pushCard("showGate(" .. (view and hs.json.encode(view) or "null") .. ")",
-    view and function() closePanel() end or nil)
+    view and function() if gate and gate.id == view.id then closePanel() end end or nil)
 end
 
 local function runAction(action)
@@ -1083,7 +1085,9 @@ local function startPanelRing(panel)
     if _G.dictationNudgePanel ~= panel or not _G.dictationNudgePanelVisible or inFlight then return end
     local state = panelRingState(now())
     local signature = state.fraction .. ":" .. math.ceil(state.remaining) .. ":" .. tostring(state.muted) .. ":" .. state.label
-    if signature == lastState then return end
+    -- Unchanged states are skipped, except while a snooze-gate problem is up:
+    -- then the refresh doubles as a check that the page is still there.
+    if signature == lastState and not gate then return end
     inFlight = true -- never queue multiple WebKit requests behind a slow render
     local ok = pcall(function()
       -- This Hammerspoon build supplies {code=0} even on success. Require an
@@ -1096,10 +1100,15 @@ local function startPanelRing(panel)
         else
           log.w("Ring update failed: " .. tostring(err and (err.description or err.code) or "no acknowledgement"))
           stopPanelRing()
+          if gate then closePanel() end -- nothing can show the problem any more
         end
       end)
     end)
-    if not ok then inFlight = false; stopPanelRing() end
+    if not ok then
+      inFlight = false
+      stopPanelRing()
+      if gate then closePanel() end
+    end
   end
   _G.dictationNudgePanelTimer = hs.timer.doEvery(0.25, update)
   update()
@@ -1563,6 +1572,9 @@ openPanel = function(mode, pendingAction)
         panelReady = true
         startPanelRing(panel)
         if gate then pushGate() end -- one requested while the page was still loading
+      elseif (action == "didFailNavigation" or action == "didFailProvisionalNavigation")
+        and panel == _G.dictationNudgePanel and gate then
+        closePanel() -- the page never arrived, so the problem cannot be shown
       end
     end)
     :windowCallback(function(action, panel)

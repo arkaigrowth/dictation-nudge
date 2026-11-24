@@ -160,7 +160,7 @@ The Wispr Flow URL is the one that works on my install. It is not something this
 |---|---|
 | Menubar item | Click to open the card. |
 | Card | Start dictation, change the limit (drag the slider, or click the limit and type `20s`, `2 min`, `1m30s`), snooze with a preset or a typed length, end a snooze with the ✕, disable for the session. |
-| Card, ▾ next to Snooze | Presets, or **Custom…** to type a length in minutes and hours: `45m`, `90`, `1.5h`, `1h 30m`, `2 hours`, `1:30`, `an hour and a half`. A bare number is minutes. One minute to 12 hours. Days and longer are refused, as is anything it cannot read exactly. |
+| Card, ▾ next to Snooze | Presets, or **Custom…** to type a length in minutes and hours: `45m`, `90`, `1.5h`, `1h 30m`, `2 hours`, `1:30`, `an hour and a half`. A bare number is minutes. One minute to 12 hours, decimals to four places, nothing rounded. Days and longer are refused, as is anything it cannot read exactly. |
 | Card, gear in the corner | "Math to snooze": how many problems the [snooze gate](#the-snooze-gate) asks. The gear is tinted while the gate is on. |
 | Esc | Closes the card or ends the lockdown, from any app. |
 | Reset chord | Hold Control+Option (configurable) to refill the allowance. |
@@ -201,7 +201,7 @@ Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (
 
 **The problems** are everyday money math you can do in your head, drawn at random from 23 kinds: tips, discounts, and sales tax; percent change; the rule of 72; a month of credit card interest; what a subscription or a daily habit costs per year; hourly rate to salary and back; savings rate; splitting a bill; the 4% rule; an employer match; two years of compounding; profit margin; months of runway; payback time; fund fees; the gain needed to recover from a loss; return after inflation; a contractor's tax set-aside; a raise after tax; a down payment. Every answer is a whole number. `$1,200`, `1200`, and `15%` are all read as numbers. The number has to be exact. A wrong answer gets a one-line hint about the method, never the answer, and you can try again as often as you like.
 
-**Tip** shows the mental-math shortcut for the kind of problem on screen, such as "10% = move the decimal one place left. 5% = half of that." or "Years to double ≈ 72 ÷ rate." It is there to be used: the point of the gate is a moment of thought, and getting faster at this arithmetic is a fine way to spend it. A tip is general and never uses the problem's numbers.
+**Tip** shows the mental-math shortcut for the kind of problem on screen, such as "10% = move the decimal one place left. 5% = half of that." or "Years to double ≈ 72 ÷ the rate in percent." It is there to be used: the point of the gate is a moment of thought, and getting faster at this arithmetic is a fine way to spend it. A tip is fixed for its kind of problem. It can name common rates and rule constants, but neither a tip nor a hint contains a number the card would accept as the answer.
 
 **What is gated:** the card's Snooze button and its presets, a typed snooze length, the card's Disable button, and starting a snooze through the `dictationNudgeSnooze` URL or console helper.
 
@@ -216,12 +216,12 @@ Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (
 ```bash
 brew install lua@5.4
 "$(brew --prefix lua@5.4)/bin/lua" tests/run.lua
-# 74 tests, 74 passed, 0 failed
+# 77 tests, 77 passed, 0 failed
 ```
 
 The suite needs only Lua 5.4, the version Hammerspoon embeds, and I have not run it on any other. Homebrew's `lua@5.4` is not put on your `PATH`, hence the full path above; if your own `lua` is already 5.4, `lua tests/run.lua` is enough. It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
 
-What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, that an answer counts only for the problem it was sent for, what is and is not gated, and that answer keys spend nothing. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer, and a hint and a tip that do not state it (as a dollar amount, a percent, or the bare number).
+What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, that an answer counts only for the problem it was sent for, what is and is not gated, that answer keys spend nothing, and that a card which stops responding or fails to load while a problem is up is closed, which drops the problem. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer, and a hint and a tip with no number in them that would be accepted as that answer.
 
 It also checks the claims in [What it reads from your keyboard](#what-it-reads-from-your-keyboard):
 
