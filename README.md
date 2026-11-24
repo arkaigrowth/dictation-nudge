@@ -9,7 +9,7 @@ A [Hammerspoon](https://www.hammerspoon.org/) module for macOS that notices when
 Typing spends a small, refillable allowance. When it runs out you get a sound, a banner, and a card with a one-click button that starts your dictation app. Keep typing through that and the keyboard is blocked for a few seconds. Resting refills the allowance at the rate typing spends it, so it takes sustained typing to run it out.
 
 <p align="center">
-  <img src="docs/screenshots/nudge.png" width="440" alt="The nudge card: Dictate this instead? with a Start Wispr Flow button, an empty countdown ring, and Snooze, Keep typing, and Disable buttons">
+  <img src="docs/screenshots/nudge.png" width="440" alt="The nudge card: Dictate this instead? with a Start Wispr Flow button, an empty countdown ring, Snooze, Keep typing, and Disable buttons, and a settings gear in the corner">
 </p>
 
 It is one Lua file with no dependencies beyond Hammerspoon, and a plain-Lua test suite that runs without macOS.
@@ -100,7 +100,7 @@ You need macOS and [Hammerspoon](https://www.hammerspoon.org/).
 
 ```lua
 dictationNudgeStatus()
--- tap=true threshold=15s used=0.4s lastCountedKeyAge=1.2s lockdown=off snooze=off card=closed disabled=false
+-- tap=true threshold=15s used=0.4s lastCountedKeyAge=1.2s lockdown=off snooze=off card=closed disabled=false snoozeMath=off
 ```
 
 `lastCountedKeyAge` is the age of the last key that counted as typing since the meter was last reset (a reload, a snooze, a limit change, or the reset chord all reset it). If it still says `never seen` after you typed plain letters, the tap is probably not receiving your keys. A missing Input Monitoring grant is one cause: grant it, then quit and reopen Hammerspoon.
