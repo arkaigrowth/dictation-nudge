@@ -78,6 +78,7 @@
 --   short money-math problems: tips, discounts, interest, the rule of 72,
 --   runway, fees. The snooze starts
 --   only after the last correct answer. Esc or "Never mind" drops it.
+--   "Tip" shows the mental-math shortcut for that kind of problem.
 --   It is friction for a reflex, not a lock: ending a snooze, re-enabling,
 --   the allowance slider, and the setting itself are never gated.
 --   While a problem is showing, digit keys don't spend allowance. The answer
@@ -264,6 +265,8 @@ end
 --
 -- Every template takes pick(list) -> one element, and returns
 --   question (string), answer (whole number), hint (string shown after a miss).
+-- `tip` is the mental-math shortcut for that kind of problem, shown when the
+-- Tip button is pressed. A hint uses the problem's numbers; a tip never does.
 -- Parameter lists are chosen so every answer is a whole number you can reach
 -- in your head. If you add a template, keep that property: the tests draw
 -- every template thousands of times and fail on a fractional answer.
@@ -279,7 +282,9 @@ end
 MoneyMath.money = money
 
 local TEMPLATES = {
-  { name = "tip", make = function(pick)
+  { name = "tip",
+    tip = "10% = move the decimal one place left. 5% = half of that. 15% = 10% + 5%. 20% = 10% doubled.",
+    make = function(pick)
       local bill, pct = pick({20, 40, 60, 80, 100, 120, 140, 160}), pick({10, 15, 20})
       return string.format("%d%% tip on a %s bill. Tip in dollars?", pct, money(bill)),
         bill * pct / 100,
@@ -287,21 +292,27 @@ local TEMPLATES = {
           or string.format("10%% of %s is %s. Build %d%% from that.", money(bill), money(bill / 10), pct)
     end },
 
-  { name = "discount", make = function(pick)
+  { name = "discount",
+    tip = "Flip it: 25% off means you pay 75%. Or build the discount from 10% chunks and subtract.",
+    make = function(pick)
       local price, off = pick({40, 60, 80, 120, 160, 200}), pick({10, 20, 25, 30, 50})
       return string.format("%s jacket, %d%% off. Sale price?", money(price), off),
         price - price * off / 100,
         string.format("Work out %d%% of %s first, then subtract it.", off, money(price))
     end },
 
-  { name = "sales_tax", make = function(pick)
+  { name = "sales_tax",
+    tip = "10% = move the decimal one place left. 5% = half of that. Add it to the price.",
+    make = function(pick)
       local price, tax = pick({20, 40, 60, 80, 120, 200}), pick({5, 10})
       return string.format("%s item plus %d%% sales tax. Total?", money(price), tax),
         price + price * tax / 100,
         string.format("%d%% of %s is %s. Add it on.", tax, money(price), money(price * tax / 100))
     end },
 
-  { name = "percent_change", make = function(pick)
+  { name = "percent_change",
+    tip = "Change ÷ where it started. Then reduce the fraction: a half, a quarter, a fifth, a tenth.",
+    make = function(pick)
       local old, pct, up = pick({20, 40, 60, 80, 100, 200}), pick({10, 20, 25, 50}), pick({true, false})
       local change = old * pct / 100
       local new = up and old + change or old - change
@@ -310,7 +321,9 @@ local TEMPLATES = {
         string.format("Change divided by the starting price: %s / %s.", money(change), money(old))
     end },
 
-  { name = "rule_of_72", make = function(pick)
+  { name = "rule_of_72",
+    tip = "Years to double ≈ 72 ÷ rate. It runs backward too: rate ≈ 72 ÷ years.",
+    make = function(pick)
       local rate = pick({2, 3, 4, 6, 8, 9, 12})
       if pick({true, false}) then
         return string.format("Rule of 72: at %d%% a year, about how many years for money to double?", rate),
@@ -320,28 +333,36 @@ local TEMPLATES = {
         rate, string.format("72 / %d.", 72 / rate)
     end },
 
-  { name = "card_interest", make = function(pick)
+  { name = "card_interest",
+    tip = "Monthly rate = APR ÷ 12. 1% of the balance = drop two zeros. Scale from there.",
+    make = function(pick)
       local balance, apr = pick({1000, 2000, 3000, 4000, 5000, 6000}), pick({12, 18, 24, 30})
       return string.format("%s card balance at %d%% APR. Roughly how much interest this month?", money(balance), apr),
         balance * apr / 1200,
         string.format("%d%% a year is %s%% a month. Take that share of %s.", apr, tostring(apr / 12):gsub("%.0$", ""), money(balance))
     end },
 
-  { name = "subscription_year", make = function(pick)
+  { name = "subscription_year",
+    tip = "× 12 is × 10, plus × 2.",
+    make = function(pick)
       local monthly = pick({5, 8, 10, 12, 15, 20, 25, 30, 40, 50})
       return string.format("A %s a month subscription. Cost per year?", money(monthly)),
         monthly * 12,
         string.format("%s x 12 = %s x 10, plus %s x 2.", money(monthly), money(monthly), money(monthly))
     end },
 
-  { name = "daily_habit", make = function(pick)
+  { name = "daily_habit",
+    tip = "Count the days first: days a week × 50. Multiplying by 50 is × 100, halved.",
+    make = function(pick)
       local cost, days = pick({4, 5, 6, 8, 10}), pick({3, 5})
       return string.format("%s coffee, %d days a week, 50 weeks a year. Yearly cost?", money(cost), days),
         cost * days * 50,
         string.format("%d days x 50 weeks = %d days. Then x %s.", days, days * 50, money(cost))
     end },
 
-  { name = "hourly_salary", make = function(pick)
+  { name = "hourly_salary",
+    tip = "Full time is about 2,000 hours. To a salary: double, add three zeros. To hourly: drop three zeros, halve.",
+    make = function(pick)
       if pick({true, false}) then
         local rate = pick({20, 25, 30, 35, 40, 50, 60, 75})
         return string.format("%s an hour, full time (2,000 hours a year). Annual pay?", money(rate)),
@@ -352,7 +373,9 @@ local TEMPLATES = {
         salary / 2000, "Drop three zeros, then halve."
     end },
 
-  { name = "savings_rate", make = function(pick)
+  { name = "savings_rate",
+    tip = "Saved ÷ take-home. Find a tenth of take-home, then count how many tenths you saved.",
+    make = function(pick)
       local income, pct = pick({4000, 5000, 6000, 8000}), pick({5, 10, 15, 20, 25})
       local saved = income * pct / 100
       return string.format("You take home %s a month and save %s. Savings rate, in percent?", money(income), money(saved)),
@@ -360,7 +383,9 @@ local TEMPLATES = {
         string.format("Savings divided by take-home pay: %s / %s.", money(saved), money(income))
     end },
 
-  { name = "split_with_tip", make = function(pick)
+  { name = "split_with_tip",
+    tip = "A 20% tip adds a fifth: take 10% and double it. To split four ways, halve twice.",
+    make = function(pick)
       local people, share = pick({2, 3, 4, 5}), pick({12, 18, 24, 30, 36})
       local bill = people * share / 1.2 -- shares are multiples of 6, so this stays whole
       bill = math.floor(bill + 0.5)
@@ -369,7 +394,9 @@ local TEMPLATES = {
         string.format("Tip first: %s + %s = %s. Then divide by %d.", money(bill), money(bill / 5), money(bill * 1.2), people)
     end },
 
-  { name = "four_percent_rule", make = function(pick)
+  { name = "four_percent_rule",
+    tip = "Nest egg = 25 × yearly spending: × 100, then ÷ 4. Backward: 4% is 1%, four times.",
+    make = function(pick)
       local spend = pick({30000, 40000, 50000, 60000, 80000, 100000})
       if pick({true, false}) then
         return string.format("You spend %s a year. Nest egg needed under the 4%% rule (25 x yearly spending)?", money(spend)),
@@ -379,14 +406,18 @@ local TEMPLATES = {
         spend, "1% is the portfolio with two zeros dropped. Take four of those."
     end },
 
-  { name = "employer_match", make = function(pick)
+  { name = "employer_match",
+    tip = "1% of a salary = drop two zeros. Multiply by the match percent.",
+    make = function(pick)
       local salary, match = pick({50000, 60000, 80000, 100000, 120000}), pick({3, 4, 5, 6})
       return string.format("Your employer matches 401(k) contributions up to %d%% of your %s salary. Most free money per year?", match, money(salary)),
         salary * match / 100,
         string.format("1%% of %s is %s. Times %d.", money(salary), money(salary / 100), match)
     end },
 
-  { name = "compound_two_years", make = function(pick)
+  { name = "compound_two_years",
+    tip = "One year at a time: add the percent, then add the same percent of the new total. Year two gains more.",
+    make = function(pick)
       local principal, rate = pick({1000, 2000, 5000, 10000}), pick({10, 20})
       local year1 = principal + principal * rate / 100
       return string.format("Invest %s at %d%% a year, compounded once a year. Value after 2 years?", money(principal), rate),
@@ -394,7 +425,9 @@ local TEMPLATES = {
         string.format("Year 1 ends at %s. Year 2 grows that, not the original %s.", money(year1), money(principal))
     end },
 
-  { name = "profit_margin", make = function(pick)
+  { name = "profit_margin",
+    tip = "Margin = profit ÷ sale price. Markup = profit ÷ cost. Same profit, different base.",
+    make = function(pick)
       local sale, margin = pick({20, 40, 80, 100, 200}), pick({10, 20, 25, 40, 50})
       local cost = sale - sale * margin / 100
       return string.format("Buy for %s, sell for %s. Profit margin, as a percent of the sale price?", money(cost), money(sale)),
@@ -402,21 +435,27 @@ local TEMPLATES = {
         string.format("Profit / sale price: %s / %s. (Markup would divide by cost instead.)", money(sale - cost), money(sale))
     end },
 
-  { name = "runway", make = function(pick)
+  { name = "runway",
+    tip = "Savings ÷ monthly spend. Cancel the matching zeros first.",
+    make = function(pick)
       local spend, months = pick({2000, 3000, 4000, 5000}), pick({3, 6, 8, 12})
       return string.format("You have %s saved and spend %s a month. Months of runway?", money(spend * months), money(spend)),
         months,
         string.format("%s / %s. Drop the zeros first.", money(spend * months), money(spend))
     end },
 
-  { name = "payback", make = function(pick)
+  { name = "payback",
+    tip = "Cost ÷ monthly saving = months to break even.",
+    make = function(pick)
       local saving, months = pick({10, 20, 25, 50}), pick({4, 6, 8, 12, 18})
       return string.format("A %s purchase saves you %s a month. Months until it pays for itself?", money(saving * months), money(saving)),
         months,
         string.format("%s / %s.", money(saving * months), money(saving))
     end },
 
-  { name = "fee_drag", make = function(pick)
+  { name = "fee_drag",
+    tip = "1% of anything = drop two zeros. A fee repeats every year, so small percents add up.",
+    make = function(pick)
       local balance, fee = pick({50000, 100000, 200000, 400000}), pick({1, 2})
       return string.format("A fund charges a %d%% fee each year. On a %s balance, how many dollars a year?", fee, money(balance)),
         balance * fee / 100,
@@ -424,20 +463,26 @@ local TEMPLATES = {
           or string.format("1%% of %s is %s. Double it.", money(balance), money(balance / 100))
     end },
 
-  { name = "drawdown_recovery", make = function(pick)
+  { name = "drawdown_recovery",
+    tip = "Gain needed = loss ÷ what is left. The deeper the fall, the bigger the climb back.",
+    make = function(pick)
       local drop = pick({20, 50, 60, 75, 80})
       return string.format("A stock falls %d%%. What percent gain gets it back to even?", drop),
         drop * 100 / (100 - drop),
         string.format("$100 becomes %s. Getting back needs %s more, on a base of %s.", money(100 - drop), money(drop), money(100 - drop))
     end },
 
-  { name = "real_return", make = function(pick)
+  { name = "real_return",
+    tip = "Real return ≈ return − inflation. It measures what your money can buy.",
+    make = function(pick)
       local nominal, inflation = pick({5, 6, 7, 8, 10}), pick({2, 3, 4})
       return string.format("Your portfolio returns %d%% in a year with %d%% inflation. Roughly what real return, in percent?", nominal, inflation),
         nominal - inflation, "Subtract inflation from the return."
     end },
 
-  { name = "tax_set_aside", make = function(pick)
+  { name = "tax_set_aside",
+    tip = "30% = 10%, three times. 25% = a quarter: halve it twice.",
+    make = function(pick)
       local invoice, pct = pick({1000, 2000, 4000, 5000, 8000}), pick({25, 30})
       return string.format("You invoice %s as a contractor and set aside %d%% for taxes. Dollars set aside?", money(invoice), pct),
         invoice * pct / 100,
@@ -445,14 +490,18 @@ local TEMPLATES = {
           or string.format("10%% of %s is %s. Times 3.", money(invoice), money(invoice / 10))
     end },
 
-  { name = "raise_after_tax", make = function(pick)
+  { name = "raise_after_tax",
+    tip = "You keep 100% − the tax rate. Build the tax from 10% and 1% chunks, then subtract.",
+    make = function(pick)
       local raise, rate = pick({5000, 10000, 20000}), pick({22, 24, 32})
       return string.format("A %s raise, taxed at a %d%% marginal rate. Extra take-home per year?", money(raise), rate),
         raise - raise * rate / 100,
         string.format("Tax is %d%% of %s = %s. Subtract it.", rate, money(raise), money(raise * rate / 100))
     end },
 
-  { name = "down_payment", make = function(pick)
+  { name = "down_payment",
+    tip = "10% = drop a zero. 20% = double that. 5% = half of it.",
+    make = function(pick)
       local price, pct = pick({200000, 300000, 400000, 500000}), pick({5, 10, 20})
       return string.format("%d%% down on a %s home. Down payment in dollars?", pct, money(price)),
         price * pct / 100,
@@ -476,7 +525,7 @@ function MoneyMath.newChallenge(count, rand)
   for i = 1, count do
     local template = TEMPLATES[order[(i - 1) % #order + 1]]
     local question, answer, hint = template.make(pick)
-    problems[i] = { kind = template.name, question = question, answer = answer, hint = hint }
+    problems[i] = { kind = template.name, question = question, answer = answer, hint = hint, tip = template.tip }
   end
   return problems
 end
@@ -822,6 +871,7 @@ local function gateView(feedback, wrong)
     title = string.format("Solve %d to %s", total, goal),
     id = gate.id, index = gate.index, total = total,
     question = gate.problems[gate.index].question,
+    tip = gate.problems[gate.index].tip,
     feedback = feedback or "", wrong = wrong == true,
   }
 end
@@ -1106,8 +1156,10 @@ button { border:none; border-radius:8px; cursor:pointer; color:#fff; font-weight
 #gatecheck:hover { background:#3d78ff; }
 #gatefeedback { min-height:36px; font-size:12px; line-height:1.5; color:#98a0ae; }
 #gatefeedback.wrong { color:#ffb4ad; }
-#gatecancel { align-self:center; background:transparent; color:#98a0ae; font-weight:500; font-size:12px; padding:6px 10px; margin-top:8px; }
-#gatecancel:hover { color:#fff; background:#2a2d38; }
+#gatefeedback.tip { color:#a9c3ff; }
+#gatelinks { display:flex; justify-content:center; gap:8px; margin-top:8px; }
+#gatelinks button { background:transparent; color:#98a0ae; font-weight:500; font-size:12px; padding:6px 10px; }
+#gatelinks button:hover { color:#fff; background:#2a2d38; }
 </style></head><body>
 <button id="gear" title="Settings" aria-label="Settings" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M8.42 3.90L8.73 1.49L11.27 1.49L11.58 3.90L13.20 4.57L15.12 3.09L16.91 4.88L15.43 6.80L16.10 8.42L18.51 8.73L18.51 11.27L16.10 11.58L15.43 13.20L16.91 15.12L15.12 16.91L13.20 15.43L11.58 16.10L11.27 18.51L8.73 18.51L8.42 16.10L6.80 15.43L4.88 16.91L3.09 15.12L4.57 13.20L3.90 11.58L1.49 11.27L1.49 8.73L3.90 8.42L4.57 6.80L3.09 4.88L4.88 3.09L6.80 4.57ZM12.70 10.00A2.7 2.7 0 1 0 7.30 10.00A2.7 2.7 0 1 0 12.70 10.00Z"/></svg></button>
 <div id="prefs" class="hidden" role="group" aria-labelledby="mathlabel">
@@ -1163,7 +1215,7 @@ __CTA__
 <div id="gatequestion"></div>
 <div id="gateentry"><input id="gateanswer" type="text" inputmode="decimal" maxlength="16" autocomplete="off" spellcheck="false" aria-label="Your answer"><button id="gatecheck">Check</button></div>
 <div id="gatefeedback" role="status" aria-live="polite"></div>
-<button id="gatecancel">Never mind</button>
+<div id="gatelinks"><button id="gatetip" title="Show the mental-math shortcut for this kind of problem">💡 Tip</button><button id="gatecancel">Never mind</button></div>
 <div class="esc">Answers are whole numbers. Digits typed here don't use your allowance. Esc cancels.</div>
 </div>
 <script>
@@ -1332,6 +1384,7 @@ function showGate(view){
   if(gateQuestion.textContent!==view.question){ gateQuestion.textContent=view.question; gateAnswer.value=''; }
   gateFeedback.textContent=view.feedback;
   gateFeedback.classList.toggle('wrong',!!view.wrong);
+  gateFeedback.classList.remove('tip');
   setGateOpen(true);
   gateAnswer.focus(); gateAnswer.select();
 }
@@ -1342,6 +1395,13 @@ function submitGate(){
 }
 document.getElementById('gatecheck').addEventListener('click',submitGate);
 gateAnswer.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); submitGate(); } });
+// The shortcut for this kind of problem. It comes with the view; pressing Tip only shows it.
+document.getElementById('gatetip').addEventListener('click',function(){
+  if(!gateShown) return;
+  gateFeedback.textContent=gateShown.tip;
+  gateFeedback.classList.remove('wrong'); gateFeedback.classList.add('tip');
+  gateAnswer.focus();
+});
 document.getElementById('gatecancel').addEventListener('click',function(){ if(gateShown) send({action:'gateCancel', id:gateShown.id}); });
 showGate(__GATEVIEW__);
 </script></body></html>

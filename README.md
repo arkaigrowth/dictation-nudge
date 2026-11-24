@@ -196,10 +196,12 @@ Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (
 
 <p align="center">
   <img src="docs/screenshots/math-setting.png" width="48%" alt="The card with the gear menu open: Math to snooze, set to 2">
-  <img src="docs/screenshots/snooze-gate.png" width="48%" alt="The snooze gate: Solve 2 to snooze 1h, problem 1 of 2, a question about a raise after tax, an answer box, and a Check button">
+  <img src="docs/screenshots/snooze-gate.png" width="48%" alt="The snooze gate: Solve 2 to snooze 1h, problem 1 of 2, a question about the 4% rule, an answer box, a Check button, and the Tip shortcut for that kind of problem shown underneath">
 </p>
 
 **The problems** are everyday money math you can do in your head, drawn at random from 23 kinds: tips, discounts, and sales tax; percent change; the rule of 72; a month of credit card interest; what a subscription or a daily habit costs per year; hourly rate to salary and back; savings rate; splitting a bill; the 4% rule; an employer match; two years of compounding; profit margin; months of runway; payback time; fund fees; the gain needed to recover from a loss; return after inflation; a contractor's tax set-aside; a raise after tax; a down payment. Every answer is a whole number. `$1,200`, `1200`, and `15%` are all read as numbers. The number has to be exact. A wrong answer gets a one-line hint about the method, never the answer, and you can try again as often as you like.
+
+**Tip** shows the mental-math shortcut for the kind of problem on screen, such as "10% = move the decimal one place left. 5% = half of that." or "Years to double ≈ 72 ÷ rate." It is there to be used: the point of the gate is a moment of thought, and getting faster at this arithmetic is a fine way to spend it. A tip is general and never uses the problem's numbers.
 
 **What is gated:** the card's Snooze button and its presets, a typed snooze length, the card's Disable button, and starting a snooze through the `dictationNudgeSnooze` URL or console helper.
 
@@ -214,12 +216,12 @@ Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (
 ```bash
 brew install lua@5.4
 "$(brew --prefix lua@5.4)/bin/lua" tests/run.lua
-# 72 tests, 72 passed, 0 failed
+# 73 tests, 73 passed, 0 failed
 ```
 
 The suite needs only Lua 5.4, the version Hammerspoon embeds, and I have not run it on any other. Homebrew's `lua@5.4` is not put on your `PATH`, hence the full path above; if your own `lua` is already 5.4, `lua tests/run.lua` is enough. It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
 
-What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, that an answer counts only for the problem it was sent for, what is and is not gated, and that answer keys spend nothing. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer and a hint that does not state it.
+What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, that an answer counts only for the problem it was sent for, what is and is not gated, and that answer keys spend nothing. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer, and a hint and a tip that do not state it.
 
 It also checks the claims in [What it reads from your keyboard](#what-it-reads-from-your-keyboard):
 
@@ -231,7 +233,7 @@ It also checks the claims in [What it reads from your keyboard](#what-it-reads-f
 
 The last check is a text scan. It guards against the obvious regressions; it is not a proof, and it is no substitute for reading the file.
 
-What it does not cover: anything that needs the real Hammerspoon. The card's HTML and JavaScript (including the limit field's duration parser, the gear, how a problem is displayed, and that the controls behind a problem cannot be reached while it is up), the menubar item's appearance, the overlay on real displays, and the permission prompts are checked by hand.
+What it does not cover: anything that needs the real Hammerspoon. The card's HTML and JavaScript (including the limit field's duration parser, the gear, how a problem is displayed, the Tip button, and that the controls behind a problem cannot be reached while it is up), the menubar item's appearance, the overlay on real displays, and the permission prompts are checked by hand.
 
 ## Limitations
 
