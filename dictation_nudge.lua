@@ -1080,7 +1080,7 @@ button { border:none; border-radius:8px; cursor:pointer; color:#fff; font-weight
 #gatecancel { align-self:center; background:transparent; color:#98a0ae; font-weight:500; font-size:12px; padding:6px 10px; margin-top:8px; }
 #gatecancel:hover { color:#fff; background:#2a2d38; }
 </style></head><body>
-<button id="gear" title="Settings" aria-label="Settings" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="5.1"/><circle cx="10" cy="10" r="1.9"/><path d="M10 1.6v2.2M10 16.2v2.2M1.6 10h2.2M16.2 10h2.2M4.06 4.06l1.56 1.56M14.38 14.38l1.56 1.56M4.06 15.94l1.56-1.56M14.38 5.62l1.56-1.56"/></svg></button>
+<button id="gear" title="Settings" aria-label="Settings" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M8.42 3.90L8.73 1.49L11.27 1.49L11.58 3.90L13.20 4.57L15.12 3.09L16.91 4.88L15.43 6.80L16.10 8.42L18.51 8.73L18.51 11.27L16.10 11.58L15.43 13.20L16.91 15.12L15.12 16.91L13.20 15.43L11.58 16.10L11.27 18.51L8.73 18.51L8.42 16.10L6.80 15.43L4.88 16.91L3.09 15.12L4.57 13.20L3.90 11.58L1.49 11.27L1.49 8.73L3.90 8.42L4.57 6.80L3.09 4.88L4.88 3.09L6.80 4.57ZM12.70 10.00A2.7 2.7 0 1 0 7.30 10.00A2.7 2.7 0 1 0 12.70 10.00Z"/></svg></button>
 <div id="prefs" class="hidden" role="group" aria-labelledby="mathlabel">
 <div id="mathlabel">Math to snooze</div>
 <div class="chips" id="mathchips" role="radiogroup" aria-labelledby="mathlabel"></div>
