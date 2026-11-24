@@ -410,7 +410,7 @@ local TEMPLATES = {
     tip = "1% of a salary = drop two zeros. Multiply by the match percent.",
     make = function(pick)
       local salary, match = pick({50000, 60000, 80000, 100000, 120000}), pick({3, 4, 5, 6})
-      return string.format("Your employer matches 401(k) contributions up to %d%% of your %s salary. Most free money per year?", match, money(salary)),
+      return string.format("Your employer matches 401(k) contributions dollar for dollar, up to %d%% of your %s salary. Most free money per year?", match, money(salary)),
         salary * match / 100,
         string.format("1%% of %s is %s. Times %d.", money(salary), money(salary / 100), match)
     end },
@@ -530,22 +530,32 @@ function MoneyMath.newChallenge(count, rand)
   return problems
 end
 
--- Accepts "9", "$1,200", "15%", " 1210.00 ". One optional "$" in front, one
--- optional "%" behind, commas only as thousands separators. Returns a number,
--- or nil when the text is not exactly one plain number.
-function MoneyMath.parseAnswer(text)
+-- Reads "9", "$1,200", "15%", " 1210.00 " as sign, whole digits, fraction
+-- digits. One optional "$" in front, one optional "%" behind, commas only as
+-- thousands separators. Returns nil when the text is not exactly one number.
+local function numberParts(text)
   if type(text) ~= "string" then return nil end
-  local sign, whole, fraction = text:match("^%s*(%-?)%$?%s*([%d,]*)(%.?%d*)%s*%%?%s*$")
-  if not whole or (whole == "" and not fraction:match("%d")) then return nil end
+  local sign, whole, fraction = text:match("^%s*(%-?)%$?%s*([%d,]*)%.?(%d*)%s*%%?%s*$")
+  if not whole or (whole == "" and fraction == "") then return nil end
   if whole:find(",", 1, true) then
     local head, groups = whole:match("^(%d%d?%d?)(.*)$")
     if not head or groups == "" or groups:gsub(",%d%d%d", "") ~= "" then return nil end
   end
-  return tonumber(sign .. (whole:gsub(",", "")) .. (fraction == "." and "" or fraction))
+  return sign, (whole:gsub(",", "")), fraction
 end
 
+function MoneyMath.parseAnswer(text)
+  local sign, whole, fraction = numberParts(text)
+  if not sign then return nil end
+  return tonumber(sign .. (whole == "" and "0" or whole) .. (fraction ~= "" and ("." .. fraction) or ""))
+end
+
+-- Exact: the digits typed must be the answer's digits. Trailing ".00" is fine;
+-- 24.999999999999999 is not 25, however a float would round it.
 function MoneyMath.isCorrect(problem, text)
-  return MoneyMath.parseAnswer(text) == problem.answer
+  local sign, whole, fraction = numberParts(text)
+  if not sign or sign == "-" or fraction:find("[^0]") then return false end
+  return (whole:gsub("^0+", "")) == string.format("%d", problem.answer)
 end
 
 -- ═══ Dictation trigger ═══
@@ -670,16 +680,17 @@ local SNOOZE_UNITS_ONLY = "Minutes and hours only."
 local SNOOZE_WHOLE = "Use a whole number of minutes."
 local SNOOZE_RANGE = "Snooze can be 1 minute to 12 hours."
 
--- One number token at `scale` minutes per unit -> exact whole minutes.
--- Integer arithmetic only: no rounding, and short tokens so nothing overflows.
-local function wholeMinutes(number, scale)
+-- One number token at `scale` minutes per unit -> ten-thousandths of a
+-- minute, exactly. Integer arithmetic only: no rounding, and short tokens so
+-- nothing overflows.
+local function minuteParts(number, scale)
   local whole, fraction = number:match("^(%d*)%.?(%d*)$")
+  whole = whole:gsub("^0+", "")
   fraction = fraction:gsub("0+$", "")
   if #whole > 4 then return nil, SNOOZE_RANGE end
   if #fraction > 4 then return nil, SNOOZE_WHOLE end
-  local numerator, denominator = tonumber(whole .. fraction) * scale, math.tointeger(10 ^ #fraction)
-  if numerator % denominator ~= 0 then return nil, SNOOZE_WHOLE end
-  return numerator // denominator
+  local digits = whole .. fraction
+  return (digits == "" and 0 or tonumber(digits)) * scale * math.tointeger(10 ^ (4 - #fraction))
 end
 
 local function parseSnoozeLength(text)
@@ -688,10 +699,10 @@ local function parseSnoozeLength(text)
   if s == "" then return nil, SNOOZE_HELP end
 
   local total
-  local clockHours, clockMinutes = s:match("^(%d%d?%d?):(%d%d)$") -- 1:30
+  local clockHours, clockMinutes = s:match("^0*(%d%d?%d?):(%d%d)$") -- 1:30
   if clockHours then
     if tonumber(clockMinutes) >= 60 then return nil, SNOOZE_HELP end
-    total = tonumber(clockHours) * 60 + tonumber(clockMinutes)
+    total = (tonumber(clockHours) * 60 + tonumber(clockMinutes)) * 10000
   else
     if s == "half an hour" or s == "half a hour" or s == "half hour" or s == "a half hour" then s = "30m" end
     s = s:gsub("(%d) and a half ", "%1.5 ")      -- "2 and a half hours"
@@ -726,18 +737,21 @@ local function parseSnoozeLength(text)
         rest = ""
       end
       if scale == 60 then sawHours = true else sawMinutes = true end
-      local minutes, reason = wholeMinutes(number, scale)
-      if not minutes then return nil, reason end
-      total = total + minutes
+      local parts, reason = minuteParts(number, scale)
+      if not parts then return nil, reason end
+      total = total + parts
     end
     if plusHalf then
       if not sawHours or sawMinutes then return nil, SNOOZE_HELP end
-      total = total + 30
+      total = total + 30 * 10000
     end
   end
 
-  if total < 1 or total > SNOOZE_MAX_MINUTES then return nil, SNOOZE_RANGE end
-  return total
+  -- `total` is in ten-thousandths of a minute; only an exact whole number of minutes passes.
+  if total % 10000 ~= 0 then return nil, SNOOZE_WHOLE end
+  local minutes = total // 10000
+  if minutes < 1 or minutes > SNOOZE_MAX_MINUTES then return nil, SNOOZE_RANGE end
+  return minutes
 end
 
 local updateMenubar -- forward declarations (mutual references)
@@ -753,6 +767,7 @@ local lastSnoozeToggleAt = 0
 -- It lives and dies with the card: closePanel() clears it.
 local gate
 local gateSerial = 0
+local panelReady = false -- the open card's page has finished loading
 
 -- 0 = gate off. start() validates the option and the card can only set 0..10.
 local function snoozeMathCount()
@@ -876,16 +891,26 @@ local function gateView(feedback, wrong)
   }
 end
 
--- Run one statement in the open card. The card must already define what it calls.
-local function pushCard(script)
+-- Run one statement in the open card, once its page has loaded. `onFailure`
+-- runs if the card does not acknowledge it (success is an explicit `true`;
+-- this Hammerspoon build hands the callback an error table either way).
+local function pushCard(script, onFailure)
   local panel = _G.dictationNudgePanel
-  if not panel then return end
-  pcall(function() panel:evaluateJavaScript(script .. "; true", function() end) end)
+  if not panel or not panelReady then return end
+  local sent = pcall(function()
+    panel:evaluateJavaScript(script .. "; true", function(result)
+      if result ~= true and onFailure and _G.dictationNudgePanel == panel then onFailure() end
+    end)
+  end)
+  if not sent and onFailure then onFailure() end
 end
 
+-- A challenge the card cannot show (its web content died, say) must not stay
+-- alive in here: close the card, which drops the challenge with it.
 local function pushGate(feedback, wrong)
   local view = gateView(feedback, wrong)
-  pushCard("showGate(" .. (view and hs.json.encode(view) or "null") .. ")")
+  pushCard("showGate(" .. (view and hs.json.encode(view) or "null") .. ")",
+    view and function() closePanel() end or nil)
 end
 
 local function runAction(action)
@@ -1410,6 +1435,7 @@ showGate(__GATEVIEW__);
 closePanel = function()
   stopPanelRing()
   gate = nil
+  panelReady = false
   if _G.dictationNudgePanel then
     pcall(function() _G.dictationNudgePanel:delete() end)
     _G.dictationNudgePanel = nil
@@ -1534,6 +1560,7 @@ openPanel = function(mode, pendingAction)
     :allowTextEntry(true)
     :navigationCallback(function(action, panel)
       if action == "didFinishNavigation" and panel == _G.dictationNudgePanel then
+        panelReady = true
         startPanelRing(panel)
         if gate then pushGate() end -- one requested while the page was still loading
       end
@@ -1542,6 +1569,7 @@ openPanel = function(mode, pendingAction)
       if action == "closing" and panel == _G.dictationNudgePanel then
         stopPanelRing()
         gate = nil
+        panelReady = false
         _G.dictationNudgePanel = nil
         _G.dictationNudgePanelVisible = false
       end

@@ -216,19 +216,19 @@ Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (
 ```bash
 brew install lua@5.4
 "$(brew --prefix lua@5.4)/bin/lua" tests/run.lua
-# 73 tests, 73 passed, 0 failed
+# 74 tests, 74 passed, 0 failed
 ```
 
 The suite needs only Lua 5.4, the version Hammerspoon embeds, and I have not run it on any other. Homebrew's `lua@5.4` is not put on your `PATH`, hence the full path above; if your own `lua` is already 5.4, `lua tests/run.lua` is enough. It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
 
-What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, that an answer counts only for the problem it was sent for, what is and is not gated, and that answer keys spend nothing. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer, and a hint and a tip that do not state it.
+What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, that an answer counts only for the problem it was sent for, what is and is not gated, and that answer keys spend nothing. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer, and a hint and a tip that do not state it (as a dollar amount, a percent, or the bare number).
 
 It also checks the claims in [What it reads from your keyboard](#what-it-reads-from-your-keyboard):
 
 - The fake key event raises an error if the module calls anything other than the type, keycode, flags, or autorepeat accessors.
 - A run of varied typing through both tiers must produce exactly three fixed log lines, in order (nudge fired, lockdown began, lockdown ended), no settings writes, and no opened URLs.
 - Only the three preference keys are ever written, with the values that were set.
-- The text of a snooze-gate answer is never logged, saved, or sent back to the card. A rejected answer changes nothing; a final correct one produces exactly the usual snooze log line and snooze-length write.
+- The text of a snooze-gate answer is never logged, saved, or sent back to the card. The test checks that a rejected answer writes no log line and no setting, and that in a plain gated snooze the final correct answer produces one log line (the snooze) and one settings write (the snooze length).
 - The card's HTML is scanned for anything that would load from outside, and the source for character, network, file, shell, clipboard, and dynamic-code APIs.
 
 The last check is a text scan. It guards against the obvious regressions; it is not a proof, and it is no substitute for reading the file.
