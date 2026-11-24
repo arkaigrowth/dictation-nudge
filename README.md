@@ -195,7 +195,8 @@ Off by default. It exists because a snooze button one click away from the nudge 
 Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (or set `snoozeMathProblems` in your config, up to 10). From then on, Snooze and Disable show that many short problems first, one at a time, and the snooze or disable happens only after the last correct answer.
 
 <p align="center">
-  <img src="docs/screenshots/snooze-gate.png" width="440" alt="The snooze gate: Solve 2 to snooze 30m, problem 1 of 2, a tip question with an answer box and a Check button">
+  <img src="docs/screenshots/math-setting.png" width="48%" alt="The card with the gear menu open: Math to snooze, set to 2">
+  <img src="docs/screenshots/snooze-gate.png" width="48%" alt="The snooze gate: Solve 2 to snooze 1h, problem 1 of 2, a question about a raise after tax, an answer box, and a Check button">
 </p>
 
 **The problems** are everyday money math you can do in your head, drawn at random from 23 kinds: tips, discounts, and sales tax; percent change; the rule of 72; a month of credit card interest; what a subscription or a daily habit costs per year; hourly rate to salary and back; savings rate; splitting a bill; the 4% rule; an employer match; two years of compounding; profit margin; months of runway; payback time; fund fees; the gain needed to recover from a loss; return after inflation; a contractor's tax set-aside; a raise after tax; a down payment. Every answer is a whole number. `$1,200`, `1200`, and `15%` are all read as numbers. A wrong answer gets a one-line hint about the method, never the answer, and you can try again as often as you like.
