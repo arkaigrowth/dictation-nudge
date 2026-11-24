@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Dictation Nudge icon: a microphone inside the card's countdown ring. Original artwork, MIT like the rest of the repo. -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#16171d"/>
+  <circle cx="512" cy="512" r="286" fill="none" stroke="#343842" stroke-width="52"/>
+  <circle cx="512" cy="512" r="286" fill="none" stroke="#79cc52" stroke-width="52" stroke-linecap="round"
+          stroke-dasharray="1258 1797" transform="rotate(-90 512 512)"/>
+  <rect x="456" y="348" width="112" height="196" rx="56" fill="#ffffff"/>
+  <path d="M410 500a102 102 0 0 0 204 0" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round"/>
+  <path d="M512 602v62M462 664h100" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round"/>
+</svg>

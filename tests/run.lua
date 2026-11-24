@@ -449,6 +449,19 @@ test("the source uses no character, network, file, shell, or clipboard APIs", fu
   end
 end)
 
+test("the card loads nothing from outside the module", function()
+  local env = load()
+  env.type(121, STEP) -- nudge card
+  local nudge = env.panels[#env.panels].html
+  _G.dictationNudgeSettings()
+  local settings = env.panels[#env.panels].html
+  for _, html in ipairs({ nudge, settings }) do
+    for _, pattern in ipairs({ "https?:", "src%s*=", "href%s*=", "@import", "url%(", "fetch%(", "XMLHttpRequest", "WebSocket", "<iframe", "<link" }) do
+      assert(not html:find(pattern), "card HTML contains " .. pattern)
+    end
+  end
+end)
+
 -- ═══ Card text ═══
 
 test("card text uses the configured names and escapes them", function()
