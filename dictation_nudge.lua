@@ -17,18 +17,25 @@
 --     the excluded-key filter), the modifier flags (shortcut filter and
 --     reset chord), and the autorepeat flag. That is all it reads. It
 --     never asks for the characters an event would produce.
---   * The only thing it remembers about your typing is two numbers: the
---     timestamp of the last counted key and the seconds of allowance
---     used. No keycode, flag, or character is stored, logged, or sent
---     anywhere. The module makes no network calls.
+--   * What it remembers is timing, never keys: when the last counted key
+--     arrived, how many seconds of allowance are used, when the last
+--     nudge fired, and when a lockdown ends. No keycode, flag, or
+--     character is stored, logged, or sent anywhere.
+--   * It logs state changes to the Hammerspoon console (started, nudge
+--     fired, lockdown began or ended, snoozed, limit changed). Ordinary
+--     typing logs nothing.
 --   * On disk it persists two preferences through hs.settings: the
 --     allowance and the last snooze length.
---   * It does change what reaches your apps in two cases: Esc is consumed
---     while the card or the lockdown is showing, and every other key is
---     consumed during the lockdown.
+--   * The module makes no network calls of its own. The card's Start
+--     button opens `dictationURL`, which is whatever you configure.
+--   * It does change what reaches your apps in two cases: an Esc key
+--     press is consumed while the card or the lockdown is showing, and
+--     every other key press is consumed during the lockdown. Modifier
+--     changes and key releases are never consumed.
 --   * macOS stops delivering keystrokes to event taps while secure input
---     is on (password fields). That is the OS, not this code; to this
---     module it just looks like a pause.
+--     is on (password fields). That is the OS, not this code. To this
+--     module it looks like a pause, and it also means the lockdown
+--     neither blocks keys nor sees Esc there.
 --
 -- Escalation tiers:
 --   Tier 1 @ allowance used: sound + banner + nudge card with a
@@ -37,8 +44,8 @@
 --        counted key; idle time never triggers a nudge. Esc closes the
 --        card from anywhere (no focus needed).
 --   Tier 2 @ +escalateAfterSeconds of typing THROUGH tier 1:
---        full-screen overlay on all displays that swallows keystrokes
---        for lockdownSeconds. Esc bails instantly. Set
+--        full-screen overlay on all displays; key presses the tap
+--        receives are swallowed for lockdownSeconds. Esc ends it. Set
 --        lockdownEnabled = false for a card-only setup.
 --
 -- Keys that never count (they neither spend allowance nor break a burst):
@@ -53,7 +60,7 @@
 --   * URL events (for a launcher app, Raycast, Alfred, Shortcuts):
 --       hammerspoon://dictationNudgeSettings
 --       hammerspoon://dictationNudgeSnooze
---       hammerspoon://dictationNudgeTest
+--       hammerspoon://dictationNudgeTest   (a preview: no cooldown, no lockdown)
 --   * The allowance ("Never" = off) and snooze length persist across reloads.
 --   * Disable/Enable is session-only: a reload re-enables.
 --
@@ -70,7 +77,7 @@ local M = {}
 local log = hs.logger.new("dictation_nudge", "info")
 
 -- ═══ Config (override via start({...})) ═══
-local config = {
+local DEFAULTS = {
   gapSeconds           = 3,      -- max gap joining a typing burst / continuing escalation
   refillDelaySeconds   = 0.25,   -- short pause allowance, independent of the 3s burst boundary
   refillPerSecond      = 1,      -- one second of typing credit restored per idle second
@@ -93,12 +100,66 @@ local config = {
   snoozeSettingsKey    = "dictationNudge.snoozeMinutes",     -- last-used snooze duration
 }
 
+-- The live config: defaults, then whatever start({...}) passed.
+local config = {}
+for key, value in pairs(DEFAULTS) do config[key] = value end
+
+local SNOOZE_MAX_MINUTES = 720
+
+-- Called by start() before it touches anything. A wrong type would otherwise
+-- surface later as an error inside the keyboard callback, and a misspelled
+-- option (say, lockdownEnable) would be silently ignored.
+local function validateConfig(candidate)
+  local function fail(key, want)
+    error(string.format("dictation_nudge: option '%s' must be %s", tostring(key), want), 0)
+  end
+  local function isNumber(value) return type(value) == "number" and value == value and math.abs(value) ~= math.huge end
+  for key in pairs(candidate) do
+    if DEFAULTS[key] == nil then error("dictation_nudge: unknown option '" .. tostring(key) .. "'", 0) end
+  end
+  for _, key in ipairs({"gapSeconds", "refillDelaySeconds", "refillPerSecond", "escalateAfterSeconds", "cooldownSeconds"}) do
+    if not isNumber(candidate[key]) or candidate[key] < 0 then fail(key, "a number, zero or more") end
+  end
+  if not isNumber(candidate.lockdownSeconds) or candidate.lockdownSeconds <= 0 then
+    fail("lockdownSeconds", "a number above zero")
+  end
+  local allowance = candidate.nudgeAfterSeconds
+  if not isNumber(allowance) or (allowance ~= -1 and allowance < 1) then
+    fail("nudgeAfterSeconds", "1 or more, or -1 for never")
+  end
+  local snooze = candidate.snoozeMinutes
+  if not isNumber(snooze) or snooze < 1 or snooze > SNOOZE_MAX_MINUTES then
+    fail("snoozeMinutes", "between 1 and " .. SNOOZE_MAX_MINUTES)
+  end
+  for _, key in ipairs({"lockdownEnabled", "menubarEnabled"}) do
+    if type(candidate[key]) ~= "boolean" then fail(key, "true or false") end
+  end
+  for _, key in ipairs({"dictationName", "menubarAutosaveName", "settingsKey", "snoozeSettingsKey"}) do
+    if type(candidate[key]) ~= "string" or candidate[key] == "" then fail(key, "a non-empty string") end
+  end
+  for _, key in ipairs({"soundName", "dictationURL"}) do
+    if candidate[key] ~= false and type(candidate[key]) ~= "string" then fail(key, "a string, or false") end
+  end
+  if type(candidate.extraExcludedKeys) ~= "table" then fail("extraExcludedKeys", "a list of key names") end
+  for _, name in ipairs(candidate.extraExcludedKeys) do
+    if type(name) ~= "string" then fail("extraExcludedKeys", "a list of key names") end
+  end
+  local chord = candidate.resetModifiers
+  if chord ~= false then
+    if type(chord) ~= "table" then fail("resetModifiers", "a list of modifier names, or false") end
+    for _, name in ipairs(chord) do
+      if not ({ cmd = true, ctrl = true, alt = true, shift = true, fn = true })[name] then
+        fail("resetModifiers", "a list of cmd, ctrl, alt, shift, fn, or false")
+      end
+    end
+  end
+end
+
 -- Slider stops for the settings panel (seconds; -1 = Never/off)
 local THRESHOLD_STOPS = {15, 30, 45, 60, 90, 120, 180, 240, 300, -1}
 
 -- Snooze duration choices (minutes) offered in the card dropdown and menubar
 local SNOOZE_PRESETS = {5, 10, 15, 20, 30}
-local SNOOZE_MAX_MINUTES = 720
 
 -- ═══ State (kept in _G so Hammerspoon reloads don't leak taps/timers) ═══
 local function resetTypingProgress()
@@ -168,7 +229,7 @@ end
 local function startDictation()
   if config.dictationURL then
     hs.urlevent.openURL(config.dictationURL)
-    log.i("Opened " .. config.dictationURL)
+    log.i("Opened the dictation URL")
   else
     hs.application.open(config.dictationName)
   end
@@ -221,10 +282,14 @@ local function updateCountdownText()
 end
 
 local function startLockdown()
-  if _G.dictationNudgeLockdownUntil then return end -- already locked
+  if _G.dictationNudgeLockdownUntil and _G.dictationNudgeLockdownUntil > now() then return end -- already locked
+  endLockdown() -- clear anything left from an expired one
 
   _G.dictationNudgeLockdownUntil = now() + config.lockdownSeconds
-  log.i(string.format("Lockdown engaged for %ds", config.lockdownSeconds))
+  -- Schedule the release before drawing anything: if the overlay fails, the
+  -- keyboard still comes back. onKeyDown checks the deadline as well.
+  table.insert(_G.dictationNudgeLockTimers, hs.timer.doAfter(config.lockdownSeconds, endLockdown))
+  log.i(string.format("Lockdown engaged for %gs", config.lockdownSeconds))
 
   for _, screen in ipairs(hs.screen.allScreens()) do
     local canvas = hs.canvas.new(screen:fullFrame())
@@ -260,7 +325,6 @@ local function startLockdown()
 
   updateCountdownText()
   table.insert(_G.dictationNudgeLockTimers, hs.timer.doEvery(1, updateCountdownText))
-  table.insert(_G.dictationNudgeLockTimers, hs.timer.doAfter(config.lockdownSeconds, endLockdown))
 end
 
 -- ═══ Snooze ═══
@@ -745,12 +809,11 @@ openPanel = function(mode)
       startDictation()
       closePanel()
     elseif body.action == "snooze" then
+      -- The card only ever sends a valid length; anything else is ignored.
       if type(body.minutes) == "number" and body.minutes >= 1 and body.minutes <= SNOOZE_MAX_MINUTES then
         startSnooze(body.minutes)
-      else
-        toggleSnooze()
+        closePanel()
       end
-      closePanel()
     elseif body.action == "unsnooze" then
       -- Card stays open: the ring timer flips the status back to live within 250ms.
       if snoozeRemaining() then cancelSnooze() end
@@ -827,11 +890,15 @@ openPanel = function(mode)
 end
 
 -- ═══ Tier 1: sound + banner + nudge card ═══
-local function fireTier1()
-  local ts = now()
-  _G.dictationNudgeTier1At = ts
-  _G.dictationNudgeLastNudgeAt = ts
-  log.i("Tier 1 nudge fired")
+-- preview = true (console helper and the test URL) shows the same sound,
+-- banner, and card without starting the cooldown or arming the lockdown.
+local function fireTier1(preview)
+  if not preview then
+    local ts = now()
+    _G.dictationNudgeTier1At = ts
+    _G.dictationNudgeLastNudgeAt = ts
+    log.i("Tier 1 nudge fired")
+  end
 
   if config.soundName then
     local sound = hs.sound.getByName(config.soundName)
@@ -926,9 +993,12 @@ local function onKeyDown(event)
     return false
   end
 
-  -- During lockdown: swallow everything else.
+  -- During lockdown: swallow every other key press. The deadline is checked
+  -- here, not only by the release timer, so a timer that never ran cannot
+  -- leave the keyboard blocked.
   if _G.dictationNudgeLockdownUntil then
-    return true
+    if ts < _G.dictationNudgeLockdownUntil then return true end
+    endLockdown()
   end
 
   -- Disabled: fully passive.
@@ -993,15 +1063,26 @@ local function onInputEvent(event)
 end
 
 -- ═══ Lifecycle ═══
+local URL_EVENTS = {
+  { names = {"dictationnudgesettings", "dictationNudgeSettings"}, fn = function() openPanel("settings") end },
+  { names = {"dictationnudgesnooze", "dictationNudgeSnooze"}, fn = function() toggleSnooze() end },
+  { names = {"dictationnudgetest", "dictationNudgeTest"}, fn = function() fireTier1(true) end },
+}
+
 function M.start(userConfig)
-  userConfig = userConfig or {}
-  for key, value in pairs(userConfig) do
-    config[key] = value
-  end
+  -- Build the new config on the side and validate it before any side effect.
+  -- Every start begins from the defaults, so start({}) after start({...})
+  -- does not inherit the earlier overrides.
+  local candidate = {}
+  for key, value in pairs(DEFAULTS) do candidate[key] = value end
+  for key, value in pairs(userConfig or {}) do candidate[key] = value end
+  validateConfig(candidate)
+  for key in pairs(config) do config[key] = nil end
+  for key, value in pairs(candidate) do config[key] = value end
 
   -- persisted threshold preference wins over defaults/args
   local saved = hs.settings.get(config.settingsKey)
-  if type(saved) == "number" then
+  if type(saved) == "number" and (saved == -1 or saved >= 1) then
     config.nudgeAfterSeconds = saved
   end
 
@@ -1043,14 +1124,8 @@ function M.start(userConfig)
   -- URL events for the launcher app, Raycast Quicklinks, Shortcuts, etc.
   -- Bound in both casings so a normalized URL host can't drop the event.
   local okBinds, errBinds = pcall(function()
-    for _, name in ipairs({"dictationnudgesettings", "dictationNudgeSettings"}) do
-      hs.urlevent.bind(name, function() openPanel("settings") end)
-    end
-    for _, name in ipairs({"dictationnudgesnooze", "dictationNudgeSnooze"}) do
-      hs.urlevent.bind(name, function() toggleSnooze() end)
-    end
-    for _, name in ipairs({"dictationnudgetest", "dictationNudgeTest"}) do
-      hs.urlevent.bind(name, function() fireTier1() end)
+    for _, event in ipairs(URL_EVENTS) do
+      for _, name in ipairs(event.names) do hs.urlevent.bind(name, event.fn) end
     end
   end)
   if not okBinds then
@@ -1059,7 +1134,7 @@ function M.start(userConfig)
   end
 
   log.i(string.format(
-    "Started: nudge at %s used (gap %ds, refill %gs/s after %gs idle), escalate +%ds, lockdown %ds (%s), cooldown %ds, snooze %dm",
+    "Started: nudge at %s used (gap %gs, refill %gs/s after %gs idle), escalate +%gs, lockdown %gs (%s), cooldown %gs, snooze %gm",
     fmtThreshold(config.nudgeAfterSeconds), config.gapSeconds, config.refillPerSecond, config.refillDelaySeconds, config.escalateAfterSeconds,
     config.lockdownSeconds, config.lockdownEnabled and "on" or "off",
     config.cooldownSeconds, config.snoozeMinutes
@@ -1075,6 +1150,11 @@ function M.stop()
   _G.dictationNudgeLockTimers = _G.dictationNudgeLockTimers or {}
   endLockdown()
   closePanel()
+  pcall(function()
+    for _, event in ipairs(URL_EVENTS) do
+      for _, name in ipairs(event.names) do hs.urlevent.bind(name, nil) end
+    end
+  end)
   if _G.dictationNudgeMenu then
     _G.dictationNudgeMenu:delete()
     _G.dictationNudgeMenu = nil
@@ -1088,13 +1168,17 @@ function M.stop()
 end
 
 -- ═══ Console helpers (Hammerspoon Console / `hs -c`) ═══
--- dictationNudgeTest()     -> fire tier 1 now (sound + banner + nudge card)
--- dictationNudgeLock()     -> fire lockdown now
+-- dictationNudgeTest()     -> preview tier 1 (sound + banner + nudge card);
+--                             does not start the cooldown or arm the lockdown
+-- dictationNudgeLock()     -> start the lockdown now (only while the tap runs,
+--                             so Esc can end it)
 -- dictationNudgeSnooze()   -> toggle snooze
 -- dictationNudgeDisable()  -> toggle disable (session-only)
 -- dictationNudgeSettings() -> open the card in settings mode
--- dictationNudgeStatus()   -> tap/state dump; if lastKeyAge stays nil while
---                          you type, Input Monitoring permission is missing.
+-- dictationNudgeStatus()   -> tap/state dump. lastCountedKeyAge is the last key
+--                          that counted as typing; if it stays "never seen"
+--                          while you type letters with the tool on, the tap is
+--                          not receiving events (usually Input Monitoring).
 -- dictationNudgeFilterTest() -> builds synthetic events IN MEMORY (nothing
 -- is posted to apps) and reports how the filter classifies them.
 -- Offline tests of the allowance math live in tests/ (plain Lua, no Hammerspoon).
@@ -1115,8 +1199,11 @@ function dictationNudgeFilterTest()
   )
 end
 
-function dictationNudgeTest() fireTier1() end
-function dictationNudgeLock() startLockdown() end
+function dictationNudgeTest() fireTier1(true) end
+function dictationNudgeLock()
+  if not _G.dictationNudgeTap then return "not running" end
+  startLockdown()
+end
 function dictationNudgeSnooze() toggleSnooze() end
 function dictationNudgeDisable() toggleDisabled() end
 function dictationNudgeSettings() openPanel("settings") end
@@ -1125,12 +1212,12 @@ function dictationNudgeStatus()
   local lastKeyAge = _G.dictationNudgeLastKeyAt and (now() - _G.dictationNudgeLastKeyAt) or nil
   local rem = snoozeRemaining()
   return string.format(
-    "tap=%s threshold=%s used=%s lastKeyAge=%s lockdown=%s snooze=%s card=%s disabled=%s",
+    "tap=%s threshold=%s used=%s lastCountedKeyAge=%s lockdown=%s snooze=%s card=%s disabled=%s",
     tostring(tapRunning),
     fmtThreshold(config.nudgeAfterSeconds),
     string.format("%.1fs", typingUsedSeconds(now())),
     lastKeyAge and string.format("%.1fs", lastKeyAge) or "never seen",
-    _G.dictationNudgeLockdownUntil and "ACTIVE" or "off",
+    (_G.dictationNudgeLockdownUntil and _G.dictationNudgeLockdownUntil > now()) and "ACTIVE" or "off",
     rem and string.format("%dm left", math.ceil(rem / 60)) or "off",
     _G.dictationNudgePanelVisible and "open" or "closed",
     tostring(_G.dictationNudgeDisabled == true)

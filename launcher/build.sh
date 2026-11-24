@@ -18,11 +18,23 @@ icon="${ICON:-$here/../assets/icon-1024.png}"
 app="$dest/Dictation Nudge.app"
 
 [ -f "$icon" ] || { echo "icon not found: $icon" >&2; exit 1; }
-mkdir -p "$dest"
-if [ -e "$app" ]; then
-  echo "Replacing existing $app"
-  rm -rf "$app"
+
+# Only ever replace a launcher this script built. Anything else that happens
+# to sit at the destination under that name is left alone.
+if [ -e "$app" ] || [ -L "$app" ]; then
+  name="$(/usr/libexec/PlistBuddy -c "Print :CFBundleName" "$app/Contents/Info.plist" 2>/dev/null || true)"
+  if [ -L "$app" ] || [ "$name" != "Dictation Nudge" ] || [ ! -f "$app/Contents/Resources/Scripts/main.scpt" ]; then
+    echo "refusing to replace $app: it is not a launcher built by this script" >&2
+    exit 1
+  fi
 fi
+
+# Build in a scratch folder and move the result into place at the end, so a
+# failed build never costs you the launcher you already have.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+final="$app"
+app="$work/Dictation Nudge.app"
 
 osacompile -o "$app" "$here/DictationNudge.applescript"
 
@@ -31,8 +43,6 @@ case "$icon" in
     cp "$icon" "$app/Contents/Resources/applet.icns"
     ;;
   *)
-    work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT
     iconset="$work/applet.iconset"
     mkdir "$iconset"
     for size in 16 32 128 256 512; do
@@ -55,4 +65,11 @@ plist="$app/Contents/Info.plist"
 codesign --force --sign - "$app" 2>/dev/null
 codesign --verify --strict "$app"
 
-echo "Built $app"
+mkdir -p "$dest"
+if [ -e "$final" ]; then
+  echo "Replacing existing $final"
+  rm -rf "$final"
+fi
+mv "$app" "$final"
+
+echo "Built $final"

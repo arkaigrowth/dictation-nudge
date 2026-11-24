@@ -214,6 +214,46 @@ test("the lockdown ends by itself after lockdownSeconds", function()
   eq(env.key("a"), false, "typing passes through again")
 end)
 
+test("a failed overlay cannot leave the keyboard blocked", function()
+  local env = load()
+  env.hs.canvas.new = function() error("no overlay for you") end
+  env.type(121, STEP)
+  for index = 1, 97 do -- type on through tier 1; the lockdown attempt raises
+    if index > 1 then env.advance(STEP) end
+    pcall(env.key, "a")
+  end
+  eq(env.key("a"), true, "blocked while the lockdown is running")
+  env.advance(15.1)
+  eq(env.key("a"), false, "released on time even though drawing failed")
+end)
+
+test("the lockdown deadline holds even if the release timer never fires", function()
+  local env = load()
+  env.type(121, STEP)
+  env.type(97, STEP)
+  eq(env.key("a"), true, "locked")
+  for _, timer in ipairs(env.timers) do timer.active = false end -- lose every timer
+  env.advance(14.5)
+  eq(env.key("a"), true, "still inside the deadline")
+  env.advance(1)
+  eq(env.key("a"), false, "past the deadline: keys pass")
+  eq(env.liveCanvases(), 0, "overlay cleaned up by the key handler")
+end)
+
+test("the test URL and console helper preview the card without arming anything", function()
+  for _, fire in ipairs({ function(env) env.urlBinds.dictationNudgeTest() end, function() _G.dictationNudgeTest() end }) do
+    local env = load()
+    env.type(9, STEP) -- mid-burst
+    fire(env)
+    eq(env.openPanels(), 1, "nudge card shown")
+    eq(_G.dictationNudgeTier1At, nil, "escalation not armed")
+    eq(_G.dictationNudgeLastNudgeAt, 0, "cooldown not started")
+    env.key("escape")
+    eq(env.type(160, STEP), 0, "20s of typing after a preview is never blocked")
+    eq(env.liveCanvases(), 0, "no lockdown")
+  end
+end)
+
 test("a pause after tier 1 calls off the escalation", function()
   local env = load()
   env.type(121, STEP)
@@ -320,6 +360,22 @@ test("snoozed: keys pass through and nothing is tracked", function()
   near(env.used(), 1.0, "tracking resumes after the snooze")
 end)
 
+test("malformed card messages do nothing", function()
+  local env = load()
+  _G.dictationNudgeSettings()
+  for _, body in ipairs({
+    "snooze", 42, {}, { action = "snooze" }, { action = "snooze", minutes = "10" },
+    { action = "snooze", minutes = 0 }, { action = "snooze", minutes = 100000 },
+    { action = "set" }, { action = "set", value = {} }, { action = "nonsense" },
+  }) do
+    env.cardMessage(body)
+  end
+  eq(_G.dictationNudgeSnoozeUntil, nil, "not snoozed")
+  eq(#env.settingsWrites, 0, "nothing saved")
+  eq(env.openPanels(), 1, "card still open")
+  eq(env.internal.config.nudgeAfterSeconds, 15, "limit unchanged")
+end)
+
 test("the card's snooze and unsnooze messages work", function()
   local env = load()
   _G.dictationNudgeSettings()
@@ -407,7 +463,7 @@ test("the handler reads only type, keycode, flags, and autorepeat", function()
   env.modifiers({ ctrl = true, alt = true })
 end)
 
-test("typing writes no log lines and no settings", function()
+test("typing below the allowance writes no log lines and no settings", function()
   local env = load()
   local logsBefore, writesBefore = #env.logs, #env.settingsWrites
   env.type(100, STEP)
@@ -415,6 +471,31 @@ test("typing writes no log lines and no settings", function()
   env.modifiers({ ctrl = true, alt = true })
   eq(#env.logs, logsBefore, "log lines during ordinary typing")
   eq(#env.settingsWrites, writesBefore, "settings writes during typing")
+end)
+
+test("a full run through both tiers logs fixed messages and leaks nothing", function()
+  local env = load()
+  local logsBefore = #env.logs
+  -- Varied keys, modifiers, and held keys, through the nudge and the lockdown.
+  local names = { "a", "s", "d", "f", "r", "u", "space" }
+  for index = 1, 260 do
+    env.advance(STEP)
+    env.key(names[index % #names + 1], { flags = { shift = index % 5 == 0, alt = index % 11 == 0 } })
+    if index % 17 == 0 then env.key("left") end
+    if index % 23 == 0 then env.key("a", { autorepeat = true }) end
+  end
+  env.key("escape")
+  env.modifiers({ ctrl = true, alt = true })
+  local expected = { ["info: Tier 1 nudge fired"] = true, ["info: Lockdown engaged for 15s"] = true, ["info: Lockdown ended"] = true }
+  local seen = 0
+  for index = logsBefore + 1, #env.logs do
+    assert(expected[env.logs[index]], "unexpected log line: " .. env.logs[index])
+    seen = seen + 1
+  end
+  eq(seen, 3, "log line count")
+  eq(#env.settingsWrites, 0, "settings writes")
+  eq(#env.urls, 0, "URLs opened")
+  eq(#env.apps, 0, "apps launched")
 end)
 
 test("only two preference keys are ever written", function()
@@ -428,6 +509,8 @@ test("only two preference keys are ever written", function()
     assert(allowed[key], "unexpected settings key: " .. tostring(key))
   end
   eq(#env.settingsWrites, 2, "write count")
+  eq(env.settings["dictationNudge.nudgeAfterSeconds"], 30, "saved limit is the number that was set")
+  eq(env.settings["dictationNudge.snoozeMinutes"], 5, "saved snooze is the number that was set")
 end)
 
 test("the source uses no character, network, file, shell, or clipboard APIs", function()
@@ -478,6 +561,53 @@ test("card text uses the configured names and escapes them", function()
   assert(not none.panels[1].html:find("resets it", 1, true), "no chord sentence when off")
 end)
 
+-- ═══ Config and lifecycle ═══
+
+test("start() rejects unknown and mistyped options before touching anything", function()
+  for _, bad in ipairs({
+    { lockdownEnable = false },          -- misspelled
+    { lockdownSeconds = "15" },
+    { lockdownSeconds = 0 },
+    { nudgeAfterSeconds = 0 },
+    { gapSeconds = -1 },
+    { lockdownEnabled = "no" },
+    { dictationName = "" },
+    { dictationURL = 42 },
+    { extraExcludedKeys = "r" },
+    { resetModifiers = { "hyper" } },
+    { snoozeMinutes = 100000 },
+  }) do
+    for name in pairs(_G) do
+      if type(name) == "string" and name:match("^dictationNudge") then _G[name] = nil end
+    end
+    local env = Stub.new()
+    _G.hs = env.hs
+    local module = dofile(MODULE_PATH)
+    local ok, err = pcall(module.start, bad)
+    eq(ok, false, "start should fail")
+    assert(tostring(err):find("dictation_nudge:", 1, true), "error names the module: " .. tostring(err))
+    eq(env.tapCallback, nil, "no event tap was created")
+    eq(next(env.urlBinds), nil, "no URL handler was bound")
+  end
+end)
+
+test("fractional durations are accepted", function()
+  local env = load({ lockdownSeconds = 7.5, gapSeconds = 2.5, escalateAfterSeconds = 1.5, cooldownSeconds = 0.5 })
+  env.type(121, STEP)
+  env.type(14, STEP)
+  eq(env.liveCanvases(), 1, "locked without raising")
+  env.advance(7.6)
+  eq(env.key("a"), false, "released")
+end)
+
+test("each start() begins from the defaults", function()
+  local env = load({ lockdownEnabled = false, extraExcludedKeys = { "r" } })
+  env.module.start({})
+  eq(env.internal.config.lockdownEnabled, true, "override not inherited")
+  env.type(9, STEP, "r")
+  near(env.used(), 1.0, "r counts again")
+end)
+
 test("stop() tears everything down", function()
   local env = load()
   env.type(121, STEP)
@@ -486,6 +616,9 @@ test("stop() tears everything down", function()
   eq(env.liveCanvases(), 0, "overlay gone")
   eq(env.openPanels(), 0, "card gone")
   eq(_G.dictationNudgeTap, nil, "tap released")
+  eq(next(env.urlBinds), nil, "URL handlers unbound")
+  eq(_G.dictationNudgeLock(), "not running", "manual lock refused without the tap")
+  eq(env.liveCanvases(), 0, "no overlay after stop")
 end)
 
 -- ═══ Runner ═══

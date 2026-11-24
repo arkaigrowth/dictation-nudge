@@ -6,7 +6,7 @@
 
 A [Hammerspoon](https://www.hammerspoon.org/) module for macOS that notices when you have been typing for a while and nudges you to dictate instead.
 
-Typing spends a small, refillable allowance. When it runs out you get a sound, a banner, and a card with a one-click button that starts your dictation app. Keep typing through that and the keyboard is blocked for a few seconds. Pausing refills the allowance, so short bursts of typing never trigger anything.
+Typing spends a small, refillable allowance. When it runs out you get a sound, a banner, and a card with a one-click button that starts your dictation app. Keep typing through that and the keyboard is blocked for a few seconds. Resting refills the allowance at the rate typing spends it, so it takes sustained typing to run it out.
 
 <p align="center">
   <img src="docs/screenshots/nudge.png" width="440" alt="The nudge card: Dictate this instead? with a Start Wispr Flow button, an empty countdown ring, and Snooze, Keep typing, and Disable buttons">
@@ -26,7 +26,7 @@ The defaults point at [Wispr Flow](https://wisprflow.ai/), because that is what 
 
 **Tier 1, the nudge.** When the allowance is used up, the next key you type triggers a system sound, a banner, and the card above. From the card you can start dictation, snooze, change the allowance, or dismiss it and keep typing. Esc closes it from any app.
 
-**Tier 2, the lockdown.** If you keep typing for 12 more seconds without a real pause, a dark overlay covers every display and **the module swallows your keystrokes for 15 seconds**. Esc ends it immediately. This is the part of the tool that does something *to* you, on purpose. If you do not want it, set `lockdownEnabled = false` and the tool stops at the card.
+**Tier 2, the lockdown.** If you keep typing for 12 more seconds without a real pause, a dark overlay covers every display and **the module swallows your key presses for 15 seconds**. Esc ends it immediately. This is the part of the tool that does something *to* you, on purpose. If you do not want it, set `lockdownEnabled = false` and the tool stops at the card.
 
 **The card, any time.** Click the menubar item (or run the launcher app, or open a URL) to see the allowance, change the limit, snooze, or disable.
 
@@ -39,7 +39,7 @@ The menubar shows the seconds you have left (`🎙 15s`), shading from green to 
 
 ## What it reads from your keyboard
 
-This tool installs an event tap that sees every key press, so it is fair to ask exactly what it does with them. The short version: it looks at each key press long enough to decide whether it counts as typing, and keeps a timestamp. Here is the long version, and each point is checked by the test suite.
+This tool installs an event tap that sees every key press, so it is fair to ask exactly what it does with them. The short version: it looks at each key press long enough to decide whether it counts as typing, and keeps a timestamp. Here is the long version. The [tests](#tests) check the parts of it that can be checked offline.
 
 **What the tap listens to.** `keyDown` and `flagsChanged` (modifier) events, system-wide, for as long as Hammerspoon runs.
 
@@ -51,22 +51,24 @@ This tool installs an event tap that sees every key press, so it is fair to ask 
 
 It never asks an event for the characters it would produce.
 
-**What it keeps.** Two numbers about your typing: the time of the last counted key, and how many seconds of allowance are used. No keycode, modifier, or character is stored, written to the Hammerspoon console, or sent anywhere.
+**What it keeps.** Timing, never keys. In memory it holds when the last counted key arrived, how many seconds of allowance are used, when the last nudge fired (for the cooldown and the lockdown countdown), and when a lockdown or snooze ends. No keycode, modifier, or character is stored, written to the Hammerspoon console, or sent anywhere.
+
+**What it logs.** State changes, to the Hammerspoon console: started, nudge fired, lockdown began or ended, snoozed, limit changed. Typing itself logs nothing.
 
 **What goes to disk.** Two preferences, through `hs.settings`: your allowance and your last snooze length.
 
-**What goes over the network.** Nothing. The module makes no network calls. The card is a local HTML string in a webview and loads no remote content. The "Start" button opens one URL on your own machine (by default `wispr-flow://start-hands-free`) to hand off to your dictation app.
+**What goes over the network.** The module makes no network calls of its own, and the card is a local HTML string that loads nothing from outside. The one thing that leaves the module is the card's Start button, which opens `dictationURL`. By default that is `wispr-flow://start-hands-free`, a hand-off to an app on your own machine. It is your setting: point it at a web address and it will open that address in your browser.
 
 **What it changes about your input.** Two things, both deliberate:
 
-- Esc is consumed (the app behind does not get it) while the card or the lockdown is on screen.
-- During the lockdown, every key press except Esc is consumed.
+- An Esc key press is consumed (the app behind does not get it) while the card or the lockdown is on screen.
+- During the lockdown, every other key press is consumed.
 
-Everything else passes through untouched.
+Everything else passes through untouched, including modifier keys on their own and key releases.
 
-**What this does not cover.** The permissions belong to Hammerspoon, not to this module. Once Hammerspoon has Accessibility and Input Monitoring, any Lua in your Hammerspoon config can read your keystrokes. This module is about 1,100 lines in one file; read it before you trust it, and treat the rest of your config the same way.
+**Where macOS overrides all of this.** While secure input is on (password fields are meant to turn it on), macOS does not deliver key events to event taps at all. So this module cannot see what you type there, and for the same reason the lockdown does not block typing there and Esc cannot dismiss it from there. That behavior belongs to macOS, not to this code.
 
-macOS stops delivering key events to event taps while secure input is on, which is how password fields are meant to work. That protection comes from macOS, not from this code.
+**What this does not cover.** The permissions belong to Hammerspoon, not to this module. Once Hammerspoon has Accessibility and Input Monitoring, any Lua in your Hammerspoon config can read your keystrokes. This module is about 1,200 lines in one file; read it before you trust it, and treat the rest of your config the same way.
 
 ## Install
 
@@ -89,16 +91,16 @@ You need macOS and [Hammerspoon](https://www.hammerspoon.org/).
 
 4. Reload the Hammerspoon config. `🎙 15s` appears in the menubar.
 
-**Check that it can see typing.** A missing Input Monitoring grant fails silently: the tap starts but never fires. Type a few characters anywhere, then run this in the Hammerspoon console:
+**Check that it can see typing.** A missing Input Monitoring grant fails silently: the tap starts but never receives anything. With the tool freshly loaded (not snoozed, not disabled, limit not on Never), type a few ordinary letters into any normal text field, then run this in the Hammerspoon console:
 
 ```lua
 dictationNudgeStatus()
--- tap=true threshold=15s used=0.4s lastKeyAge=1.2s lockdown=off snooze=off card=closed disabled=false
+-- tap=true threshold=15s used=0.4s lastCountedKeyAge=1.2s lockdown=off snooze=off card=closed disabled=false
 ```
 
-If `lastKeyAge` says `never seen` after you have typed, Input Monitoring is not granted. Grant it, then quit and reopen Hammerspoon.
+`lastCountedKeyAge` is the last key that counted as typing. If it still says `never seen`, the tap is not receiving your keys, and a missing Input Monitoring grant is the usual reason. Grant it, then quit and reopen Hammerspoon.
 
-`dictationNudgeTest()` fires the nudge card so you can see it without typing for 15 seconds.
+`dictationNudgeTest()` previews the nudge card so you can see it without typing for 15 seconds. A preview does not start the cooldown or arm the lockdown.
 
 ### Optional: a launcher app
 
@@ -108,9 +110,11 @@ If `lastKeyAge` says `never seen` after you have typed, Input Monitoring is not 
 ./launcher/build.sh /Applications
 ```
 
+Running it again replaces the launcher it built before. It refuses to touch anything else that has that name.
+
 ## Configuration
 
-Pass overrides to `start`. Anything you leave out keeps its default.
+Pass overrides to `start`. Anything you leave out keeps its default. An option it does not know, or a value of the wrong type, makes `start` raise an error before it installs anything.
 
 ```lua
 dictation_nudge.start({
@@ -136,7 +140,7 @@ dictation_nudge.start({
 | `soundName` | `"Glass"` | System sound for the nudge. `false` for silence. |
 | `dictationName` | `"Wispr Flow"` | The name shown on the card, the banner, and the overlay. |
 | `dictationURL` | `"wispr-flow://start-hands-free"` | Opened by the card's Start button. `false` launches the app called `dictationName` instead. |
-| `resetModifiers` | `{"ctrl", "alt"}` | Holding exactly these modifiers refills the allowance at once. Set it to your dictation hotkey so starting to dictate clears the meter. `false` turns it off. |
+| `resetModifiers` | `{"ctrl", "alt"}` | Holding these modifiers, with no other of Command, Control, Option, or Shift, refills the allowance at once. Fn is only checked if you list it. Set it to your dictation hotkey so starting to dictate clears the meter. `false` turns it off. |
 | `extraExcludedKeys` | `{}` | Extra keys that never count as typing, by [`hs.keycodes.map`](https://www.hammerspoon.org/docs/hs.keycodes.html#map) name. |
 | `snoozeMinutes` | `30` | Default snooze length. The last length you picked wins over this. |
 | `menubarEnabled` | `true` | `false` hides the menubar item. |
@@ -154,11 +158,11 @@ The Wispr Flow URL is the one that works on my install. It is not something this
 | Reset chord | Hold Control+Option (configurable) to refill the allowance. |
 | `hammerspoon://dictationNudgeSettings` | Opens the card. |
 | `hammerspoon://dictationNudgeSnooze` | Toggles snooze. |
-| `hammerspoon://dictationNudgeTest` | Fires the nudge card. |
+| `hammerspoon://dictationNudgeTest` | Previews the nudge card (no cooldown, no lockdown). |
 
 Disable is for the current session only: reloading Hammerspoon turns the tool back on. To turn it off for good, drag the limit to **Never**.
 
-Console helpers, for the Hammerspoon console or the `hs` command line tool: `dictationNudgeStatus()`, `dictationNudgeSettings()`, `dictationNudgeTest()`, `dictationNudgeSnooze()`, `dictationNudgeDisable()`, `dictationNudgeLock()` (starts the lockdown now), and `dictationNudgeFilterTest()` (builds a few key events in memory, posts nothing, and reports how the filter classifies them).
+Console helpers, for the Hammerspoon console (or the `hs` command line tool, if you have installed it and load `hs.ipc`): `dictationNudgeStatus()`, `dictationNudgeSettings()`, `dictationNudgeTest()`, `dictationNudgeSnooze()`, `dictationNudgeDisable()`, `dictationNudgeLock()` (starts a real lockdown now, even with `lockdownEnabled = false`), and `dictationNudgeFilterTest()` (builds a few key events in memory, posts nothing, and reports how the filter classifies them).
 
 ## How the allowance works
 
@@ -168,30 +172,33 @@ The meter charges for typing, not for time passing.
 - **Resting refills it.** After 0.25 seconds without a counted key, the allowance comes back at one second per second.
 - **Steady typing drains it in real time.** At normal typing speed the gaps are well under 0.25 seconds, so 15 seconds of typing uses 15 seconds of allowance.
 - **Slow typing does not drain it.** Each gap costs at most 0.25 seconds and everything past that refills, so at about two keys per second you break even, and slower than that you gain. The tool is tuned to catch sustained prose, not hunting for a key.
-- **A pause longer than 3 seconds ends the burst.** Nothing is charged for it, and a pending lockdown is called off.
+- **A pause longer than 3 seconds ends the burst.** Nothing is charged for it, and a pending lockdown is called off. It does not reset the meter: whatever has not refilled yet carries into the next burst, so two 10-second bursts four seconds apart will reach a 15-second limit.
 - **A nudge needs a key.** The nudge fires on the counted key that uses up the allowance, and only if the last nudge was at least two minutes ago. Idle time never fires one.
 - **The lockdown follows the nudge.** After a nudge, if you keep typing with no pause longer than 3 seconds, the first counted key at or after 12 seconds starts the lockdown. Dismissing the card does not cancel this; pausing, snoozing, or the reset chord does.
 
 Keys that never count, and never break a burst either: a held key repeating, anything typed with Command or Control down, F1 to F20, the arrow keys, Tab, and whatever you list in `extraExcludedKeys`. Shift and Option combinations count, because capitals and accented characters are typing.
 
-All of this is timestamp arithmetic done when a key arrives or when the display asks. There is no background timer running while you type.
+The meter is timestamp arithmetic, done when a key arrives or when the display asks; nothing ticks in the background to maintain it. The displays do use timers: the menubar item refreshes twice a second while the allowance is below full, and the card four times a second while it is open.
 
 ## Tests
 
 ```bash
 lua tests/run.lua
-# 38 tests, 38 passed, 0 failed
+# 46 tests, 46 passed, 0 failed
 ```
 
-The suite needs only Lua 5.4 (`brew install lua`). It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
+The suite needs only Lua 5.4, the version Hammerspoon embeds (`brew install lua@5.4`, then `lua5.4 tests/run.lua` if your `lua` is a different version). It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
 
-What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time, the key filters, the reset chord, snooze, disable, and saved preferences.
+What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card.
 
 It also checks the claims in [What it reads from your keyboard](#what-it-reads-from-your-keyboard):
 
 - The fake key event raises an error if the module calls anything other than the type, keycode, flags, or autorepeat accessors.
-- Ordinary typing must produce no log lines and no settings writes.
-- The source is scanned for character, network, file, shell, clipboard, and dynamic-code APIs.
+- A run of varied typing through both tiers must produce exactly three fixed log lines (nudge fired, lockdown began, lockdown ended), no settings writes, and no opened URLs.
+- Only the two preference keys are ever written, with the values that were set.
+- The card's HTML is scanned for anything that would load from outside, and the source for character, network, file, shell, clipboard, and dynamic-code APIs.
+
+The last check is a text scan. It guards against the obvious regressions; it is not a proof, and it is no substitute for reading the file.
 
 What it does not cover: anything that needs the real Hammerspoon. The card's HTML and JavaScript (including the duration parser), the menubar item's appearance, the overlay on real displays, and the permission prompts are checked by hand.
 
@@ -200,9 +207,9 @@ What it does not cover: anything that needs the real Hammerspoon. The card's HTM
 - **macOS and Hammerspoon only**, and tested on a single machine. Other macOS or Hammerspoon versions may behave differently.
 - **Two permissions are required**, and Input Monitoring fails silently when it is missing. Use `dictationNudgeStatus()` to check.
 - **The tap is global.** The module does not know which app or field you are typing in. It cannot exempt a code editor or a terminal; use snooze or the reset chord for that.
-- **The lockdown blocks key presses, nothing else.** A note in the code says the overlay may not draw over an app in its own full-screen Space. I have not verified this either way. If it happens, keys are still blocked for the 15 seconds and Esc still ends it.
+- **The lockdown blocks key presses, nothing else**, and not in secure-input fields (see above). A note in the code says the overlay may not draw over an app in its own full-screen Space. I have not verified this either way. If it happens, keys are still blocked for the 15 seconds and Esc still ends it.
 - **The block lives in Hammerspoon's event tap.** Quitting or reloading Hammerspoon removes it.
-- **The URL events are open to anything on your machine.** Any local app, or a web page after your browser asks for confirmation, can open a `hammerspoon://` URL. For this module that means opening the card, toggling snooze, or firing a test nudge. No URL starts the lockdown, changes the limit, or returns any information.
+- **The URL events are open to anything on your machine.** Any local app, or a web page after your browser asks for confirmation, can open a `hammerspoon://` URL. For this module that means opening the card, toggling snooze, or previewing the nudge (with its sound). No URL starts or arms the lockdown, changes the limit, or returns any information.
 - **The menubar item can be hidden by macOS or a menubar manager.** If you do not see it, check that Hammerspoon is allowed in the menubar in System Settings.
 
 ## Not affiliated
