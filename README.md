@@ -26,7 +26,7 @@ The defaults point at [Wispr Flow](https://wisprflow.ai/), because that is what 
 
 **Tier 1, the nudge.** When the allowance is used up, the next key you type triggers a system sound, a banner, and the card above. From the card you can start dictation, snooze, change the allowance, or dismiss it and keep typing. Esc closes it from any app.
 
-**Tier 2, the lockdown.** If you keep typing for 12 more seconds without a real pause, a dark overlay covers every display and **the module swallows your key presses for 15 seconds**. Esc ends it immediately. This is the part of the tool that does something *to* you, on purpose. If you do not want it, set `lockdownEnabled = false` and the tool stops at the card.
+**Tier 2, the lockdown.** If you keep typing for 12 more seconds without a real pause, a dark overlay is drawn over each display and **the module swallows the key presses it receives for 15 seconds**. Esc ends it immediately. This is the part of the tool that does something *to* you, on purpose. If you do not want it, set `lockdownEnabled = false` and the tool stops at the card on its own.
 
 **The card, any time.** Click the menubar item (or run the launcher app, or open a URL) to see the allowance, change the limit, snooze, or disable.
 
@@ -39,12 +39,13 @@ The menubar shows the seconds you have left (`🎙 15s`), shading from green to 
 
 ## What it reads from your keyboard
 
-This tool installs an event tap that sees every key press, so it is fair to ask exactly what it does with them. The short version: it looks at each key press long enough to decide whether it counts as typing, and keeps a timestamp. Here is the long version. The [tests](#tests) check the parts of it that can be checked offline.
+This tool installs an event tap that sees every key press macOS delivers to it, so it is fair to ask exactly what it does with them. The short version: it looks at each key press long enough to decide whether it counts as typing, and keeps a timestamp. Here is the long version. The [tests](#tests) check the parts of it that can be checked offline.
 
 **What the tap listens to.** `keyDown` and `flagsChanged` (modifier) events, system-wide, for as long as Hammerspoon runs.
 
 **What it reads from each event, in memory:**
 
+- the **event type**, to tell a key press from a modifier change
 - the **keycode**, to recognize Esc and to skip keys that are not typing (arrows, Tab, function keys, and any you add)
 - the **modifier flags**, to skip Command and Control shortcuts and to notice the reset chord
 - the **autorepeat flag**, to skip a key that is being held down
@@ -53,11 +54,11 @@ It never asks an event for the characters it would produce.
 
 **What it keeps.** Timing, never keys. In memory it holds when the last counted key arrived, how many seconds of allowance are used, when the last nudge fired (for the cooldown and the lockdown countdown), and when a lockdown or snooze ends. No keycode, modifier, or character is stored, written to the Hammerspoon console, or sent anywhere.
 
-**What it logs.** State changes, to the Hammerspoon console: started, nudge fired, lockdown began or ended, snoozed, limit changed. Typing itself logs nothing.
+**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit changed, Start pressed. Typing itself logs nothing.
 
 **What goes to disk.** Two preferences, through `hs.settings`: your allowance and your last snooze length.
 
-**What goes over the network.** The module makes no network calls of its own, and the card is a local HTML string that loads nothing from outside. The one thing that leaves the module is the card's Start button, which opens `dictationURL`. By default that is `wispr-flow://start-hands-free`, a hand-off to an app on your own machine. It is your setting: point it at a web address and it will open that address in your browser.
+**What goes over the network.** The module makes no network calls of its own, and the card is a local HTML string that loads nothing from outside. The one thing that leaves the module is the card's Start button, which hands `dictationURL` to macOS to open. By default that is `wispr-flow://start-hands-free`, a hand-off to an app on your own machine. It is your setting: point it at a web address and it will open that address in your browser.
 
 **What it changes about your input.** Two things, both deliberate:
 
@@ -98,7 +99,7 @@ dictationNudgeStatus()
 -- tap=true threshold=15s used=0.4s lastCountedKeyAge=1.2s lockdown=off snooze=off card=closed disabled=false
 ```
 
-`lastCountedKeyAge` is the last key that counted as typing. If it still says `never seen`, the tap is not receiving your keys, and a missing Input Monitoring grant is the usual reason. Grant it, then quit and reopen Hammerspoon.
+`lastCountedKeyAge` is the age of the last key that counted as typing since the meter was last reset (a reload, a snooze, a limit change, or the reset chord all reset it). If it still says `never seen` after you typed plain letters, the tap is probably not receiving your keys. A missing Input Monitoring grant is one cause: grant it, then quit and reopen Hammerspoon.
 
 `dictationNudgeTest()` previews the nudge card so you can see it without typing for 15 seconds. A preview does not start the cooldown or arm the lockdown.
 
@@ -110,11 +111,11 @@ dictationNudgeStatus()
 ./launcher/build.sh /Applications
 ```
 
-Running it again replaces the launcher it built before. It refuses to touch anything else that has that name.
+Running it again replaces the launcher it built before (it stamps its builds with a marker file). It refuses to touch anything else that has that name.
 
 ## Configuration
 
-Pass overrides to `start`. Anything you leave out keeps its default. An option it does not know, or a value of the wrong type, makes `start` raise an error before it installs anything.
+Pass overrides to `start`. Anything you leave out keeps its default. An option it does not know, or a value of the wrong type or shape, makes `start` raise an error before it installs anything.
 
 ```lua
 dictation_nudge.start({
@@ -136,7 +137,7 @@ dictation_nudge.start({
 | `cooldownSeconds` | `120` | Minimum time between two nudges. |
 | `escalateAfterSeconds` | `12` | How long you can keep typing after the nudge before the lockdown. |
 | `lockdownSeconds` | `15` | How long the lockdown lasts. |
-| `lockdownEnabled` | `true` | `false` removes the lockdown entirely. |
+| `lockdownEnabled` | `true` | `false` turns the automatic lockdown off. (The `dictationNudgeLock()` console helper still starts one on request.) |
 | `soundName` | `"Glass"` | System sound for the nudge. `false` for silence. |
 | `dictationName` | `"Wispr Flow"` | The name shown on the card, the banner, and the overlay. |
 | `dictationURL` | `"wispr-flow://start-hands-free"` | Opened by the card's Start button. `false` launches the app called `dictationName` instead. |
@@ -162,7 +163,7 @@ The Wispr Flow URL is the one that works on my install. It is not something this
 
 Disable is for the current session only: reloading Hammerspoon turns the tool back on. To turn it off for good, drag the limit to **Never**.
 
-Console helpers, for the Hammerspoon console (or the `hs` command line tool, if you have installed it and load `hs.ipc`): `dictationNudgeStatus()`, `dictationNudgeSettings()`, `dictationNudgeTest()`, `dictationNudgeSnooze()`, `dictationNudgeDisable()`, `dictationNudgeLock()` (starts a real lockdown now, even with `lockdownEnabled = false`), and `dictationNudgeFilterTest()` (builds a few key events in memory, posts nothing, and reports how the filter classifies them).
+Console helpers, for the Hammerspoon console (or the `hs` command line tool, if you have installed it and load `hs.ipc`): `dictationNudgeStatus()`, `dictationNudgeSettings()`, `dictationNudgeTest()`, `dictationNudgeSnooze()`, `dictationNudgeDisable()`, `dictationNudgeLock()` (starts a real lockdown now, even with `lockdownEnabled = false`, as long as the tap is enabled so Esc can end it), and `dictationNudgeFilterTest()` (builds a few key events in memory, posts nothing, and reports how the filter classifies them).
 
 ## How the allowance works
 
@@ -183,18 +184,19 @@ The meter is timestamp arithmetic, done when a key arrives or when the display a
 ## Tests
 
 ```bash
-lua tests/run.lua
-# 46 tests, 46 passed, 0 failed
+brew install lua@5.4
+"$(brew --prefix lua@5.4)/bin/lua" tests/run.lua
+# 47 tests, 47 passed, 0 failed
 ```
 
-The suite needs only Lua 5.4, the version Hammerspoon embeds (`brew install lua@5.4`, then `lua5.4 tests/run.lua` if your `lua` is a different version). It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
+The suite needs only Lua 5.4, the version Hammerspoon embeds, and I have not run it on any other. Homebrew's `lua@5.4` is not put on your `PATH`, hence the full path above; if your own `lua` is already 5.4, `lua tests/run.lua` is enough. It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
 
 What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card.
 
 It also checks the claims in [What it reads from your keyboard](#what-it-reads-from-your-keyboard):
 
 - The fake key event raises an error if the module calls anything other than the type, keycode, flags, or autorepeat accessors.
-- A run of varied typing through both tiers must produce exactly three fixed log lines (nudge fired, lockdown began, lockdown ended), no settings writes, and no opened URLs.
+- A run of varied typing through both tiers must produce exactly three fixed log lines, in order (nudge fired, lockdown began, lockdown ended), no settings writes, and no opened URLs.
 - Only the two preference keys are ever written, with the values that were set.
 - The card's HTML is scanned for anything that would load from outside, and the source for character, network, file, shell, clipboard, and dynamic-code APIs.
 

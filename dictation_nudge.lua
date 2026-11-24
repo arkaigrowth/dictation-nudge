@@ -13,17 +13,18 @@
 --
 -- What the event tap sees, and what it keeps:
 --   * It taps keyDown and flagsChanged events for the whole session.
---   * For each event it reads, in memory, the keycode (Esc handling and
---     the excluded-key filter), the modifier flags (shortcut filter and
---     reset chord), and the autorepeat flag. That is all it reads. It
---     never asks for the characters an event would produce.
+--   * For each event macOS delivers to it, it reads, in memory: the event
+--     type, the keycode (Esc handling and the excluded-key filter), the
+--     modifier flags (shortcut filter and reset chord), and the
+--     autorepeat flag. That is all it reads. It never asks for the
+--     characters an event would produce.
 --   * What it remembers is timing, never keys: when the last counted key
 --     arrived, how many seconds of allowance are used, when the last
 --     nudge fired, and when a lockdown ends. No keycode, flag, or
 --     character is stored, logged, or sent anywhere.
---   * It logs state changes to the Hammerspoon console (started, nudge
---     fired, lockdown began or ended, snoozed, limit changed). Ordinary
---     typing logs nothing.
+--   * It logs state changes to the Hammerspoon console (for example:
+--     started, nudge fired, lockdown began or ended, snoozed, limit
+--     changed). Ordinary typing logs nothing.
 --   * On disk it persists two preferences through hs.settings: the
 --     allowance and the last snooze length.
 --   * The module makes no network calls of its own. The card's Start
@@ -44,9 +45,9 @@
 --        counted key; idle time never triggers a nudge. Esc closes the
 --        card from anywhere (no focus needed).
 --   Tier 2 @ +escalateAfterSeconds of typing THROUGH tier 1:
---        full-screen overlay on all displays; key presses the tap
---        receives are swallowed for lockdownSeconds. Esc ends it. Set
---        lockdownEnabled = false for a card-only setup.
+--        an overlay is drawn over each display and the key presses the
+--        tap receives are swallowed for lockdownSeconds. Esc ends it.
+--        Set lockdownEnabled = false to turn the automatic lockdown off.
 --
 -- Keys that never count (they neither spend allowance nor break a burst):
 --   * autorepeat events (a key held down)
@@ -140,18 +141,24 @@ local function validateConfig(candidate)
   for _, key in ipairs({"soundName", "dictationURL"}) do
     if candidate[key] ~= false and type(candidate[key]) ~= "string" then fail(key, "a string, or false") end
   end
-  if type(candidate.extraExcludedKeys) ~= "table" then fail("extraExcludedKeys", "a list of key names") end
-  for _, name in ipairs(candidate.extraExcludedKeys) do
-    if type(name) ~= "string" then fail("extraExcludedKeys", "a list of key names") end
-  end
-  local chord = candidate.resetModifiers
-  if chord ~= false then
-    if type(chord) ~= "table" then fail("resetModifiers", "a list of modifier names, or false") end
-    for _, name in ipairs(chord) do
-      if not ({ cmd = true, ctrl = true, alt = true, shift = true, fn = true })[name] then
-        fail("resetModifiers", "a list of cmd, ctrl, alt, shift, fn, or false")
-      end
+  -- A plain list: {"a", "b"}. Rejects keyed tables such as {ctrl = true},
+  -- which ipairs would silently read as empty, and lists with holes.
+  local function isListOf(value, accept)
+    if type(value) ~= "table" then return false end
+    local count = 0
+    for _ in pairs(value) do count = count + 1 end
+    for index = 1, count do -- every entry must sit at 1..count
+      if not accept(value[index]) then return false end
     end
+    return true
+  end
+  if not isListOf(candidate.extraExcludedKeys, function(name) return type(name) == "string" end) then
+    fail("extraExcludedKeys", "a list of key names, like {\"r\", \"u\"}")
+  end
+  local modifiers = { cmd = true, ctrl = true, alt = true, shift = true, fn = true }
+  if candidate.resetModifiers ~= false
+    and not isListOf(candidate.resetModifiers, function(name) return modifiers[name] == true end) then
+    fail("resetModifiers", "a list of cmd, ctrl, alt, shift, fn, like {\"ctrl\", \"alt\"}, or false")
   end
 end
 
@@ -229,7 +236,7 @@ end
 local function startDictation()
   if config.dictationURL then
     hs.urlevent.openURL(config.dictationURL)
-    log.i("Opened the dictation URL")
+    log.i("Handed off to the dictation URL")
   else
     hs.application.open(config.dictationName)
   end
@@ -981,6 +988,13 @@ end
 local function onKeyDown(event)
   local ts = now()
 
+  -- A lockdown past its deadline is over, whether or not its release timer
+  -- ran. Clear it before anything else so it can neither block a key nor
+  -- eat an Esc.
+  if _G.dictationNudgeLockdownUntil and ts >= _G.dictationNudgeLockdownUntil then
+    endLockdown()
+  end
+
   -- Esc with the card open: close it (and any lockdown). Global watch,
   -- works whether or not the card has focus. Consumed so it doesn't
   -- also fire in the app behind.
@@ -993,12 +1007,9 @@ local function onKeyDown(event)
     return false
   end
 
-  -- During lockdown: swallow every other key press. The deadline is checked
-  -- here, not only by the release timer, so a timer that never ran cannot
-  -- leave the keyboard blocked.
+  -- During lockdown: swallow every other key press.
   if _G.dictationNudgeLockdownUntil then
-    if ts < _G.dictationNudgeLockdownUntil then return true end
-    endLockdown()
+    return true
   end
 
   -- Disabled: fully passive.
@@ -1073,6 +1084,9 @@ function M.start(userConfig)
   -- Build the new config on the side and validate it before any side effect.
   -- Every start begins from the defaults, so start({}) after start({...})
   -- does not inherit the earlier overrides.
+  if userConfig ~= nil and type(userConfig) ~= "table" then
+    error("dictation_nudge: start() takes a table of options, or nothing", 0)
+  end
   local candidate = {}
   for key, value in pairs(DEFAULTS) do candidate[key] = value end
   for key, value in pairs(userConfig or {}) do candidate[key] = value end
@@ -1170,15 +1184,18 @@ end
 -- ═══ Console helpers (Hammerspoon Console / `hs -c`) ═══
 -- dictationNudgeTest()     -> preview tier 1 (sound + banner + nudge card);
 --                             does not start the cooldown or arm the lockdown
--- dictationNudgeLock()     -> start the lockdown now (only while the tap runs,
---                             so Esc can end it)
+-- dictationNudgeLock()     -> start a lockdown now, even with lockdownEnabled
+--                             off (only while the tap is enabled, so Esc
+--                             can end it)
 -- dictationNudgeSnooze()   -> toggle snooze
 -- dictationNudgeDisable()  -> toggle disable (session-only)
 -- dictationNudgeSettings() -> open the card in settings mode
--- dictationNudgeStatus()   -> tap/state dump. lastCountedKeyAge is the last key
---                          that counted as typing; if it stays "never seen"
---                          while you type letters with the tool on, the tap is
---                          not receiving events (usually Input Monitoring).
+-- dictationNudgeStatus()   -> tap/state dump. lastCountedKeyAge is the age of the
+--                          last key counted since the meter was last reset
+--                          (reload, snooze, limit change, reset chord). If it
+--                          stays "never seen" while you type plain letters
+--                          with the tool on, the tap may not be receiving
+--                          events; a missing Input Monitoring grant is one cause.
 -- dictationNudgeFilterTest() -> builds synthetic events IN MEMORY (nothing
 -- is posted to apps) and reports how the filter classifies them.
 -- Offline tests of the allowance math live in tests/ (plain Lua, no Hammerspoon).
@@ -1201,7 +1218,7 @@ end
 
 function dictationNudgeTest() fireTier1(true) end
 function dictationNudgeLock()
-  if not _G.dictationNudgeTap then return "not running" end
+  if not (_G.dictationNudgeTap and _G.dictationNudgeTap:isEnabled()) then return "not running" end
   startLockdown()
 end
 function dictationNudgeSnooze() toggleSnooze() end

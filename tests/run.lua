@@ -230,14 +230,16 @@ end)
 test("the lockdown deadline holds even if the release timer never fires", function()
   local env = load()
   env.type(121, STEP)
+  env.cardMessage({ action = "close" }) -- "Keep typing": no card left to catch Esc
   env.type(97, STEP)
   eq(env.key("a"), true, "locked")
   for _, timer in ipairs(env.timers) do timer.active = false end -- lose every timer
   env.advance(14.5)
   eq(env.key("a"), true, "still inside the deadline")
   env.advance(1)
-  eq(env.key("a"), false, "past the deadline: keys pass")
+  eq(env.key("escape"), false, "past the deadline: Esc is not eaten")
   eq(env.liveCanvases(), 0, "overlay cleaned up by the key handler")
+  eq(env.key("a"), false, "past the deadline: keys pass")
 end)
 
 test("the test URL and console helper preview the card without arming anything", function()
@@ -486,13 +488,11 @@ test("a full run through both tiers logs fixed messages and leaks nothing", func
   end
   env.key("escape")
   env.modifiers({ ctrl = true, alt = true })
-  local expected = { ["info: Tier 1 nudge fired"] = true, ["info: Lockdown engaged for 15s"] = true, ["info: Lockdown ended"] = true }
-  local seen = 0
-  for index = logsBefore + 1, #env.logs do
-    assert(expected[env.logs[index]], "unexpected log line: " .. env.logs[index])
-    seen = seen + 1
+  local expected = { "info: Tier 1 nudge fired", "info: Lockdown engaged for 15s", "info: Lockdown ended" }
+  eq(#env.logs - logsBefore, #expected, "log line count")
+  for index, line in ipairs(expected) do
+    eq(env.logs[logsBefore + index], line, "log line " .. index)
   end
-  eq(seen, 3, "log line count")
   eq(#env.settingsWrites, 0, "settings writes")
   eq(#env.urls, 0, "URLs opened")
   eq(#env.apps, 0, "apps launched")
@@ -575,7 +575,12 @@ test("start() rejects unknown and mistyped options before touching anything", fu
     { dictationURL = 42 },
     { extraExcludedKeys = "r" },
     { resetModifiers = { "hyper" } },
+    { resetModifiers = { ctrl = true, alt = true } }, -- keyed, not a list
+    { resetModifiers = { "ctrl", nil, "alt" } },      -- hole
+    { extraExcludedKeys = { r = true } },
     { snoozeMinutes = 100000 },
+    false,                                            -- not a table at all
+    "lockdownEnabled = false",
   }) do
     for name in pairs(_G) do
       if type(name) == "string" and name:match("^dictationNudge") then _G[name] = nil end
@@ -619,6 +624,18 @@ test("stop() tears everything down", function()
   eq(next(env.urlBinds), nil, "URL handlers unbound")
   eq(_G.dictationNudgeLock(), "not running", "manual lock refused without the tap")
   eq(env.liveCanvases(), 0, "no overlay after stop")
+end)
+
+test("the manual lock needs an enabled tap", function()
+  local env = load()
+  _G.dictationNudgeTap:stop() -- the object exists but is not enabled
+  eq(_G.dictationNudgeLock(), "not running", "refused")
+  eq(env.liveCanvases(), 0, "no overlay")
+  _G.dictationNudgeTap:start()
+  _G.dictationNudgeLock()
+  eq(env.liveCanvases(), 1, "locks when the tap is enabled")
+  eq(env.key("escape"), true, "and Esc ends it")
+  eq(env.liveCanvases(), 0, "overlay gone")
 end)
 
 -- ═══ Runner ═══

@@ -16,15 +16,16 @@ here="$(cd "$(dirname "$0")" && pwd)"
 dest="${1:-$here/build}"
 icon="${ICON:-$here/../assets/icon-1024.png}"
 app="$dest/Dictation Nudge.app"
+marker="built-by-dictation-nudge-launcher"   # stamped into every bundle this script builds
 
 [ -f "$icon" ] || { echo "icon not found: $icon" >&2; exit 1; }
 
 # Only ever replace a launcher this script built. Anything else that happens
 # to sit at the destination under that name is left alone.
 if [ -e "$app" ] || [ -L "$app" ]; then
-  name="$(/usr/libexec/PlistBuddy -c "Print :CFBundleName" "$app/Contents/Info.plist" 2>/dev/null || true)"
-  if [ -L "$app" ] || [ "$name" != "Dictation Nudge" ] || [ ! -f "$app/Contents/Resources/Scripts/main.scpt" ]; then
+  if [ -L "$app" ] || [ ! -f "$app/Contents/Resources/$marker" ]; then
     echo "refusing to replace $app: it is not a launcher built by this script" >&2
+    echo "(move it away yourself if you want this one in its place)" >&2
     exit 1
   fi
 fi
@@ -37,6 +38,7 @@ final="$app"
 app="$work/Dictation Nudge.app"
 
 osacompile -o "$app" "$here/DictationNudge.applescript"
+: > "$app/Contents/Resources/$marker"
 
 case "$icon" in
   *.icns)
@@ -65,11 +67,17 @@ plist="$app/Contents/Info.plist"
 codesign --force --sign - "$app" 2>/dev/null
 codesign --verify --strict "$app"
 
+# Install: set the previous launcher aside, move the new one in, and only
+# then let the old one go. If the move fails, the old one is put back.
 mkdir -p "$dest"
 if [ -e "$final" ]; then
   echo "Replacing existing $final"
-  rm -rf "$final"
+  mv "$final" "$work/previous.app"
 fi
-mv "$app" "$final"
+if ! mv "$app" "$final"; then
+  [ -e "$work/previous.app" ] && mv "$work/previous.app" "$final"
+  echo "could not install into $dest" >&2
+  exit 1
+fi
 
 echo "Built $final"
