@@ -26,7 +26,7 @@ The defaults point at [Wispr Flow](https://wisprflow.ai/), because that is what 
 
 **Tier 1, the nudge.** When the allowance is used up, the next key you type triggers a system sound, a banner, and the card above. From the card you can start dictation, snooze, change the allowance, or dismiss it and keep typing. Esc closes it from any app.
 
-**Tier 2, the lockdown.** If you keep typing for 12 more seconds without a real pause, a dark overlay is drawn over each display and **the module swallows the key presses it receives for 15 seconds**. Esc ends it immediately. This is the part of the tool that does something *to* you, on purpose. If you do not want it, set `lockdownEnabled = false` and the tool stops at the card on its own.
+**Tier 2, the lockdown.** If you keep typing for 12 more seconds without a real pause, the module tries to draw a dark overlay over each display and **swallows the key presses it receives for 15 seconds**. Esc ends it immediately (password fields are the exception; see [below](#what-it-reads-from-your-keyboard)). This is the part of the tool that does something *to* you, on purpose. If you do not want it, set `lockdownEnabled = false` and the tool stops at the card on its own.
 
 **The card, any time.** Click the menubar item (or run the launcher app, or open a URL) to see the allowance, change the limit, snooze, or disable.
 
@@ -43,7 +43,7 @@ This tool installs an event tap that sees every key press macOS delivers to it, 
 
 **What the tap listens to.** `keyDown` and `flagsChanged` (modifier) events, system-wide, for as long as Hammerspoon runs.
 
-**What it reads from each event, in memory:**
+**What it can read from an event, in memory** (not every field on every event):
 
 - the **event type**, to tell a key press from a modifier change
 - the **keycode**, to recognize Esc and to skip keys that are not typing (arrows, Tab, function keys, and any you add)
@@ -54,11 +54,11 @@ It never asks an event for the characters it would produce.
 
 **What it keeps.** Timing, never keys. In memory it holds when the last counted key arrived, how many seconds of allowance are used, when the last nudge fired (for the cooldown and the lockdown countdown), and when a lockdown or snooze ends. No keycode, modifier, or character is stored, written to the Hammerspoon console, or sent anywhere.
 
-**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit changed, Start pressed. Typing itself logs nothing.
+**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit changed, dictation URL requested. Typing itself logs nothing.
 
 **What goes to disk.** Two preferences, through `hs.settings`: your allowance and your last snooze length.
 
-**What goes over the network.** The module makes no network calls of its own, and the card is a local HTML string that loads nothing from outside. The one thing that leaves the module is the card's Start button, which hands `dictationURL` to macOS to open. By default that is `wispr-flow://start-hands-free`, a hand-off to an app on your own machine. It is your setting: point it at a web address and it will open that address in your browser.
+**What goes over the network.** The module makes no network calls of its own, and the card is a local HTML string that loads nothing from outside. The one thing that leaves the module is the card's Start button, which asks macOS to open `dictationURL` with whatever app is registered for it. By default that is `wispr-flow://start-hands-free`, a hand-off to an app on your own machine. It is your setting: point it at a web address and it will open that address in your browser.
 
 **What it changes about your input.** Two things, both deliberate:
 
@@ -111,7 +111,7 @@ dictationNudgeStatus()
 ./launcher/build.sh /Applications
 ```
 
-Running it again replaces the launcher it built before (it stamps its builds with a marker file). It refuses to touch anything else that has that name.
+Running it again replaces a launcher it built before, which it recognizes by a marker file it stamps into its builds. It refuses to touch anything else with that name; move that out of the way yourself first.
 
 ## Configuration
 

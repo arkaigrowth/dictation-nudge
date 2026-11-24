@@ -31,8 +31,11 @@ if [ -e "$app" ] || [ -L "$app" ]; then
 fi
 
 # Build in a scratch folder and move the result into place at the end, so a
-# failed build never costs you the launcher you already have.
-work="$(mktemp -d)"
+# failed build never costs you the launcher you already have. The scratch
+# folder sits inside the destination so that the final moves are renames on
+# one volume, never a copy that could stop halfway.
+mkdir -p "$dest"
+work="$(mktemp -d "$dest/.dictation-nudge-build.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 final="$app"
 app="$work/Dictation Nudge.app"
@@ -69,13 +72,17 @@ codesign --verify --strict "$app"
 
 # Install: set the previous launcher aside, move the new one in, and only
 # then let the old one go. If the move fails, the old one is put back.
-mkdir -p "$dest"
 if [ -e "$final" ]; then
   echo "Replacing existing $final"
   mv "$final" "$work/previous.app"
 fi
 if ! mv "$app" "$final"; then
-  [ -e "$work/previous.app" ] && mv "$work/previous.app" "$final"
+  if [ -e "$work/previous.app" ] && ! mv "$work/previous.app" "$final"; then
+    trap - EXIT # keep the scratch folder: it holds the only copy of the old launcher
+    echo "install failed, and the previous launcher could not be put back." >&2
+    echo "It is here: $work/previous.app" >&2
+    exit 1
+  fi
   echo "could not install into $dest" >&2
   exit 1
 fi

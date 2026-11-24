@@ -13,11 +13,11 @@
 --
 -- What the event tap sees, and what it keeps:
 --   * It taps keyDown and flagsChanged events for the whole session.
---   * For each event macOS delivers to it, it reads, in memory: the event
---     type, the keycode (Esc handling and the excluded-key filter), the
---     modifier flags (shortcut filter and reset chord), and the
---     autorepeat flag. That is all it reads. It never asks for the
---     characters an event would produce.
+--   * From an event macOS delivers to it, it can read, in memory: the
+--     event type, the keycode (Esc handling and the excluded-key filter),
+--     the modifier flags (shortcut filter and reset chord), and the
+--     autorepeat flag. Nothing else. It never asks for the characters an
+--     event would produce.
 --   * What it remembers is timing, never keys: when the last counted key
 --     arrived, how many seconds of allowance are used, when the last
 --     nudge fired, and when a lockdown ends. No keycode, flag, or
@@ -28,7 +28,8 @@
 --   * On disk it persists two preferences through hs.settings: the
 --     allowance and the last snooze length.
 --   * The module makes no network calls of its own. The card's Start
---     button opens `dictationURL`, which is whatever you configure.
+--     button asks macOS to open `dictationURL`, which is whatever you
+--     configure, with whatever app is registered for it.
 --   * It does change what reaches your apps in two cases: an Esc key
 --     press is consumed while the card or the lockdown is showing, and
 --     every other key press is consumed during the lockdown. Modifier
@@ -45,8 +46,9 @@
 --        counted key; idle time never triggers a nudge. Esc closes the
 --        card from anywhere (no focus needed).
 --   Tier 2 @ +escalateAfterSeconds of typing THROUGH tier 1:
---        an overlay is drawn over each display and the key presses the
---        tap receives are swallowed for lockdownSeconds. Esc ends it.
+--        the module tries to draw an overlay over each display, and
+--        swallows the key presses the tap receives for lockdownSeconds
+--        whether or not the drawing worked. Esc ends it.
 --        Set lockdownEnabled = false to turn the automatic lockdown off.
 --
 -- Keys that never count (they neither spend allowance nor break a burst):
@@ -236,7 +238,7 @@ end
 local function startDictation()
   if config.dictationURL then
     hs.urlevent.openURL(config.dictationURL)
-    log.i("Handed off to the dictation URL")
+    log.i("Requested to open the dictation URL")
   else
     hs.application.open(config.dictationName)
   end
