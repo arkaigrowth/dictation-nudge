@@ -432,9 +432,12 @@ local function nevermind(env)
   env.cardMessage({ action = "gateCancel", id = env.internal.gate().id })
 end
 
+-- The last thing the module told the card, leaving out the ring's refreshes.
 local function lastScript(env)
   local scripts = env.panels[#env.panels].scripts
-  return scripts[#scripts]
+  for index = #scripts, 1, -1 do
+    if not scripts[index]:find("^updateRing%(") then return scripts[index] end
+  end
 end
 
 test("gate off (the default): snooze and disable are immediate", function()
@@ -534,17 +537,31 @@ end)
 
 test("gate on: a challenge requested while the card is loading shows once it has loaded", function()
   local env = load({ snoozeMathProblems = 1 })
+  env.holdNavigation = true
   _G.dictationNudgeSettings()   -- card created, page not loaded yet
   env.urlBinds["dictationNudgeSnooze"]()
   local panel = env.panels[#env.panels]
   local question = env.internal.gate().problems[1].question
   local before = #panel.scripts
+  eq(before, 0, "nothing is pushed at a page that has not loaded")
   env.finishNavigation()
   local shown = false
   for index = before + 1, #panel.scripts do
     if panel.scripts[index]:find("showGate({", 1, true) and panel.scripts[index]:find(question, 1, true) then shown = true end
   end
   assert(shown, "the problem is sent again when the page finishes loading")
+end)
+
+test("gate on: a challenge the card cannot show closes the card instead of lingering", function()
+  local env = load({ snoozeMathProblems = 1 })
+  _G.dictationNudgeSettings()
+  env.jsResult = nil            -- the card's web content has died: no acknowledgement
+  env.cardMessage({ action = "snooze", minutes = 10 })
+  eq(env.internal.gate(), nil, "no challenge left behind")
+  eq(env.openPanels(), 0, "card closed")
+  assert(not isSnoozed(), "not snoozed")
+  env.type(9, STEP, "5")
+  near(env.used(), 1.0, "digits count as typing again")
 end)
 
 test("gate on: the free answer keys follow the keyboard layout", function()
@@ -646,7 +663,7 @@ test("gate on: answer keys spend nothing while a problem shows; letters still co
   local env = load({ snoozeMathProblems = 1 })
   _G.dictationNudgeSettings()
   env.cardMessage({ action = "snooze", minutes = 10 })
-  for _, name in ipairs({ "4", "5", ".", ",", "-", "delete", "return", "pad7", "padenter" }) do
+  for _, name in ipairs({ "4", "5", ".", ",", "-", "delete", "return", "pad7", "pad,", "padenter" }) do
     eq(env.type(9, STEP, name), 0, name .. " passes through")
     near(env.used(), 0, name .. " spends nothing during a challenge")
   end
@@ -748,7 +765,8 @@ test("typed snooze lengths: minutes and hours in the usual spellings", function(
     ["90"] = 90, ["45m"] = 45, ["45 m"] = 45, ["90 mins"] = 90, ["1 minute"] = 1, ["20 minutes"] = 20, ["5 min"] = 5,
     ["2h"] = 120, ["2 h"] = 120, ["1 hour"] = 60, ["3 hours"] = 180, ["2 hrs"] = 120, ["1hr"] = 60,
     ["1.5h"] = 90, ["1.5 hours"] = 90, ["0.5h"] = 30, [".5h"] = 30, ["0.25 hours"] = 15, ["0.1h"] = 6, ["1.50000000h"] = 90, ["60.0"] = 60, ["1h,30m"] = 90,
-    ["1 hour, 30"] = 90, ["an hour and 5 minutes"] = 65,
+    ["1 hour, 30"] = 90, ["an hour and 5 minutes"] = 65, ["000045"] = 45, ["0001:30"] = 90, ["01h 05m"] = 65,
+    ["1h .0m"] = 60, ["1.025h 0.5m"] = 62, ["0.5h 30.0"] = 60,
     ["1h30"] = 90, ["1h 30"] = 90, ["1h30m"] = 90, ["1h 30m"] = 90, ["1 hr, 15 min"] = 75,
     ["1 hour 30 minutes"] = 90, ["1 hour and 30 minutes"] = 90, ["2 hours and 5 minutes"] = 125,
     ["1:30"] = 90, ["0:45"] = 45, ["12:00"] = 720,
@@ -781,13 +799,13 @@ test("typed snooze lengths: days and longer are refused, and so is anything uncl
     eq(reason, help, "'" .. text .. "' reason")
   end
   for _, text in ipairs({ "0", "0m", "0h", "721", "12h1m", "13h", "9999", "12:01", "99999", "100:00",
-    "4611686018427387905h", "4611686018427387905", "18446744073709551616m", "0.0h" }) do
+    "4611686018427387905h", "4611686018427387905", "18446744073709551616m", "0.0h", ".0", ".000m", "0h .0m" }) do
     local got, reason = parse(text)
     eq(got, nil, "'" .. text .. "' refused")
     eq(reason, "Snooze can be 1 minute to 12 hours.", "'" .. text .. "' reason")
   end
   for _, text in ipairs({ "1.5", "1.5m", "0.01h", "1.33 hours", "59.9999999", "0.9999999h", "1.00000001h",
-    "89.99999999999999", "1.000001m" }) do
+    "89.99999999999999", "1.000001m", "1.025h", "1.025h 0.4m" }) do
     local got, reason = parse(text)
     eq(got, nil, "'" .. text .. "' refused")
     eq(reason, "Use a whole number of minutes.", "'" .. text .. "' reason")
@@ -923,6 +941,9 @@ test("money math: every possible problem has a positive whole-number answer", fu
       else
         assert(not shown:find("%f[%S]" .. bank.money(answer):gsub("%$", "%%$") .. "%f[%s%.]"),
           "hint states the answer in dollars, " .. where .. " | " .. hint)
+        for _, bare in ipairs({ string.format("%d", answer), (bank.money(answer):gsub("%$", "")) }) do
+          assert(not shown:find("%f[%S]" .. bare .. "%f[%s%.]"), "hint states the answer as a bare number, " .. where .. " | " .. hint)
+        end
       end
       -- Same rule for the Tip button's shortcut, which is fixed per kind of problem.
       local tip = " " .. template.tip:gsub("[%.%?]$", "") .. " "
@@ -930,6 +951,9 @@ test("money math: every possible problem has a positive whole-number answer", fu
         assert(not tip:find("%f[%S]" .. string.format("%d", answer) .. "%%%f[%s%.]"), "tip states the answer as a percent, " .. where)
       else
         assert(not tip:find("%f[%S]" .. bank.money(answer):gsub("%$", "%%$") .. "%f[%s%.]"), "tip states the answer in dollars, " .. where)
+        for _, bare in ipairs({ string.format("%d", answer), (bank.money(answer):gsub("%$", "")) }) do
+          assert(not tip:find("%f[%S]" .. bare .. "%f[%s%.]"), "tip states the answer as a bare number, " .. where .. " | " .. template.tip)
+        end
       end
       assert(bank.isCorrect({ answer = answer }, string.format("%d", answer)), "own answer rejected, " .. where)
       assert(not bank.isCorrect({ answer = answer }, string.format("%d", answer + 1)), "wrong answer accepted, " .. where)
@@ -976,10 +1000,11 @@ test("money math: a challenge never repeats a template; answers parse like a per
     "1,2,00", "12,00", ",200", "1200,", "1,0000", "$$5", "5%%", ".", "$.", "2 5", "1,200.5.0" }) do
     eq(bank.parseAnswer(bad), nil, "reject '" .. bad .. "'")
   end
-  for _, close in ipairs({ "24.999", "25.004", "25.0001", "24", "26", "250", "2.5" }) do
+  for _, close in ipairs({ "24.999", "25.004", "25.0001", "24", "26", "250", "2.5", "-25", ".25",
+    "25.000000000000001", "24.999999999999999", "25.00000000000000000000000000001" }) do
     assert(not bank.isCorrect({ answer = 25 }, close), "'" .. close .. "' is not 25")
   end
-  for _, same in ipairs({ "25", "25.0", "25.00", "$25", "25%", " 25 " }) do
+  for _, same in ipairs({ "25", "25.0", "25.00", "$25", "25%", " 25 ", "025", "25.", "25.0000000000000000000000" }) do
     assert(bank.isCorrect({ answer = 25 }, same), "'" .. same .. "' is 25")
   end
   eq(bank.parseAnswer(nil), nil, "nil")

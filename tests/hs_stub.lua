@@ -18,7 +18,7 @@ local KEYCODES = {
   ["0"] = 29, ["1"] = 18, ["2"] = 19, ["3"] = 20, ["4"] = 21, ["5"] = 23,
   ["6"] = 22, ["7"] = 26, ["8"] = 28, ["9"] = 25,
   ["."] = 47, [","] = 43, ["-"] = 27, delete = 51, forwarddelete = 117,
-  ["return"] = 36, padenter = 76, ["pad."] = 65, ["pad-"] = 78,
+  ["return"] = 36, padenter = 76, ["pad."] = 65, ["pad,"] = 95, ["pad-"] = 78,
   pad0 = 82, pad1 = 83, pad2 = 84, pad3 = 85, pad4 = 86, pad5 = 87,
   pad6 = 88, pad7 = 89, pad8 = 91, pad9 = 92,
 }
@@ -77,6 +77,8 @@ function Stub.new()
     tapTypes = nil,
     panelCallback = nil, -- the card's JS -> Lua message handler
     menuTitle = nil,
+    jsResult = true,        -- what the card "returns" to evaluateJavaScript callbacks
+    holdNavigation = false, -- true: a new card's page stays unloaded until env.finishNavigation()
   }
 
   -- ── timers ──
@@ -92,6 +94,7 @@ function Stub.new()
 
   -- Move the clock forward, firing due timers in time order.
   function env.advance(seconds)
+    env.settle()
     local target = env.now + seconds
     while true do
       local due
@@ -231,8 +234,13 @@ function Stub.new()
       return chain({
         html = function(self, html) record.html = html; return self end,
         navigationCallback = function(self, callback) record.navigation = callback; record.view = self; return self end,
-        -- JavaScript the module pushes into the card (never executed here)
-        evaluateJavaScript = function(self, script) table.insert(record.scripts, script); return self end,
+        -- JavaScript the module pushes into the card. Never executed here; the
+        -- callback gets env.jsResult (default true, the card's acknowledgement).
+        evaluateJavaScript = function(self, script, callback)
+          table.insert(record.scripts, script)
+          if callback then callback(env.jsResult) end
+          return self
+        end,
         delete = function() record.deleted = true end,
       })
     end,
@@ -241,12 +249,20 @@ function Stub.new()
   env.hs = hs
 
   -- Send what the card's JavaScript would post to Lua.
-  function env.cardMessage(body) env.panelCallback({ body = body }) end
+  function env.cardMessage(body) env.settle(); env.panelCallback({ body = body }) end
 
-  -- The page in the newest card has finished loading.
+  -- The page in the newest card has finished loading. As in Hammerspoon, this
+  -- happens after the call that opened the card has returned.
   function env.finishNavigation()
     local record = env.panels[#env.panels]
+    if not record or record.loaded or record.deleted or not record.navigation then return end
+    record.loaded = true
     record.navigation("didFinishNavigation", record.view)
+  end
+
+  -- Pages load by the time anything else happens, unless a test holds them back.
+  function env.settle()
+    if not env.holdNavigation then env.finishNavigation() end
   end
 
   function env.openPanels()
