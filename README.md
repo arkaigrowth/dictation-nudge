@@ -30,6 +30,8 @@ The defaults point at [Wispr Flow](https://wisprflow.ai/), because that is what 
 
 **The card, any time.** Click the menubar item (or run the launcher app, or open a URL) to see the allowance, change the limit, snooze, or disable.
 
+**The snooze gate, if you want one.** Snoozing can become a reflex. Turn on "Math to snooze" under the card's gear and Snooze and Disable first ask you a few short money-math problems. See [The snooze gate](#the-snooze-gate).
+
 <p align="center">
   <img src="docs/screenshots/settings.png" width="48%" alt="The settings card with the ring partly drained and refilling">
   <img src="docs/screenshots/snoozed.png" width="48%" alt="The settings card while snoozed, with a small x button that ends the snooze">
@@ -46,7 +48,7 @@ This tool installs an event tap that sees every key press macOS delivers to it, 
 **What it can read from an event, in memory** (not every field on every event):
 
 - the **event type**, to tell a key press from a modifier change
-- the **keycode**, to recognize Esc and to skip keys that are not typing (arrows, Tab, function keys, and any you add)
+- the **keycode**, to recognize Esc and to skip keys that are not typing (arrows, Tab, function keys, any you add, and the digit keys while a snooze-gate problem is showing)
 - the **modifier flags**, to skip Command and Control shortcuts and to notice the reset chord
 - the **autorepeat flag**, to skip a key that is being held down
 
@@ -54,9 +56,11 @@ It never asks an event for the characters it would produce.
 
 **What it keeps.** Timing, never keys. In memory it holds when the last counted key arrived, how many seconds of allowance are used, when the last nudge fired (for the cooldown and the lockdown countdown), and when a lockdown or snooze ends. No keycode, modifier, or character is stored, written to the Hammerspoon console, or sent anywhere.
 
-**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit changed, dictation URL requested. Typing itself logs nothing.
+**What the card's own text fields send.** The card has three fields you can type in: the limit, a custom snooze length, and the answer to a snooze-gate problem. That text does not come from the event tap. It is ordinary text in the card's web view, and the card hands the module the limit as a number and the other two as the text you typed. The module parses a snooze length into minutes, compares an answer with the expected number, and keeps neither string. While a snooze-gate challenge is open it holds that challenge's problems and your place in it; closing the card discards them.
 
-**What goes to disk.** Two preferences, through `hs.settings`: your allowance and your last snooze length.
+**What it logs.** State changes, to the Hammerspoon console. For example: started, nudge fired, lockdown began or ended, snoozed, limit or snooze-gate count changed, dictation URL requested. Typing itself logs nothing, and neither does anything you type into the card.
+
+**What goes to disk.** Three preferences, through `hs.settings`: your allowance, your last snooze length, and the snooze-gate problem count.
 
 **What goes over the network.** The module makes no network calls of its own, and the card is a local HTML string that loads nothing from outside. The one thing that leaves the module is the card's Start button, which asks macOS to open `dictationURL` with whatever app is registered for it. By default that is `wispr-flow://start-hands-free`, a hand-off to an app on your own machine. It is your setting: point it at a web address and it will open that address in your browser.
 
@@ -69,7 +73,7 @@ Everything else passes through untouched, including modifier keys on their own a
 
 **Where macOS overrides all of this.** While secure input is on (password fields are meant to turn it on), macOS does not deliver key events to event taps at all. So this module cannot see what you type there, and for the same reason the lockdown does not block typing there and Esc cannot dismiss it from there. That behavior belongs to macOS, not to this code.
 
-**What this does not cover.** The permissions belong to Hammerspoon, not to this module. Once Hammerspoon has Accessibility and Input Monitoring, any Lua in your Hammerspoon config can read your keystrokes. This module is about 1,200 lines in one file; read it before you trust it, and treat the rest of your config the same way.
+**What this does not cover.** The permissions belong to Hammerspoon, not to this module. Once Hammerspoon has Accessibility and Input Monitoring, any Lua in your Hammerspoon config can read your keystrokes. This module is about 1,800 lines in one file; read it before you trust it, and treat the rest of your config the same way.
 
 ## Install
 
@@ -144,6 +148,7 @@ dictation_nudge.start({
 | `resetModifiers` | `{"ctrl", "alt"}` | Holding these modifiers, with no other of Command, Control, Option, or Shift, refills the allowance at once. Fn is only checked if you list it. Set it to your dictation hotkey so starting to dictate clears the meter. `false` turns it off. |
 | `extraExcludedKeys` | `{}` | Extra keys that never count as typing, by [`hs.keycodes.map`](https://www.hammerspoon.org/docs/hs.keycodes.html#map) name. |
 | `snoozeMinutes` | `30` | Default snooze length. The last length you picked wins over this. |
+| `snoozeMathProblems` | `0` | Money-math problems to solve before Snooze or Disable takes effect, `0` to `10`. `0` is off. Once you set it on the card, the saved value wins over this. See [The snooze gate](#the-snooze-gate). |
 | `menubarEnabled` | `true` | `false` hides the menubar item. |
 | `menubarAutosaveName` | `"DictationNudge"` | The name macOS files the menubar item's position under. |
 
@@ -154,11 +159,13 @@ The Wispr Flow URL is the one that works on my install. It is not something this
 | Where | What |
 |---|---|
 | Menubar item | Click to open the card. |
-| Card | Start dictation, change the limit (drag the slider, or click the limit and type `20s`, `2 min`, `1m30s`), snooze with a preset or custom length, end a snooze with the ✕, disable for the session. |
+| Card | Start dictation, change the limit (drag the slider, or click the limit and type `20s`, `2 min`, `1m30s`), snooze with a preset or a typed length, end a snooze with the ✕, disable for the session. |
+| Card, ▾ next to Snooze | Presets, or **Custom…** to type a length in minutes and hours: `45m`, `90`, `1.5h`, `1h 30m`, `2 hours`, `1:30`, `an hour and a half`. A bare number is minutes. One minute to 12 hours. Days and longer are refused, as is anything it cannot read exactly. |
+| Card, gear in the corner | "Math to snooze": how many problems the [snooze gate](#the-snooze-gate) asks. The gear is tinted while the gate is on. |
 | Esc | Closes the card or ends the lockdown, from any app. |
 | Reset chord | Hold Control+Option (configurable) to refill the allowance. |
 | `hammerspoon://dictationNudgeSettings` | Opens the card. |
-| `hammerspoon://dictationNudgeSnooze` | Toggles snooze. |
+| `hammerspoon://dictationNudgeSnooze` | Toggles snooze. With the snooze gate on, starting a snooze this way opens the card on the first problem instead. |
 | `hammerspoon://dictationNudgeTest` | Previews the nudge card (no cooldown, no lockdown). |
 
 Disable is for the current session only: reloading Hammerspoon turns the tool back on. To turn it off for good, drag the limit to **Never**.
@@ -177,32 +184,53 @@ The meter charges for typing, not for time passing.
 - **A nudge needs a key.** The nudge fires on the counted key that uses up the allowance, and only if the last nudge was at least two minutes ago. Idle time never fires one.
 - **The lockdown follows the nudge.** After a nudge, if you keep typing with no pause longer than 3 seconds, the first counted key at or after 12 seconds starts the lockdown. Dismissing the card does not cancel this; pausing, snoozing, or the reset chord does.
 
-Keys that never count, and never break a burst either: a held key repeating, anything typed with Command or Control down, F1 to F20, the arrow keys, Tab, and whatever you list in `extraExcludedKeys`. Shift and Option combinations count, because capitals and accented characters are typing.
+Keys that never count, and never break a burst either: a held key repeating, anything typed with Command or Control down, F1 to F20, the arrow keys, Tab, and whatever you list in `extraExcludedKeys`. Shift and Option combinations count, because capitals and accented characters are typing. While a snooze-gate problem is on screen, the keys you need to answer it (digits, period, comma, minus, Delete, Return) do not count either.
 
 The meter is timestamp arithmetic, done when a key arrives or when the display asks; nothing ticks in the background to maintain it. The displays do use timers: the menubar item refreshes twice a second while the allowance is below full, and the card four times a second while it is open.
+
+## The snooze gate
+
+Off by default. It exists because a snooze button one click away from the nudge is easy to hit without deciding to.
+
+Open the gear in the card's corner and set **Math to snooze** to 1, 2, 3, or 5 (or set `snoozeMathProblems` in your config, up to 10). From then on, Snooze and Disable show that many short problems first, one at a time, and the snooze or disable happens only after the last correct answer.
+
+<p align="center">
+  <img src="docs/screenshots/snooze-gate.png" width="440" alt="The snooze gate: Solve 2 to snooze 30m, problem 1 of 2, a tip question with an answer box and a Check button">
+</p>
+
+**The problems** are everyday money math you can do in your head, drawn at random from 23 kinds: tips, discounts, and sales tax; percent change; the rule of 72; a month of credit card interest; what a subscription or a daily habit costs per year; hourly rate to salary and back; savings rate; splitting a bill; the 4% rule; an employer match; two years of compounding; profit margin; months of runway; payback time; fund fees; the gain needed to recover from a loss; return after inflation; a contractor's tax set-aside; a raise after tax; a down payment. Every answer is a whole number. `$1,200`, `1200`, and `15%` are all read as numbers. A wrong answer gets a one-line hint about the method, never the answer, and you can try again as often as you like.
+
+**What is gated:** the card's Snooze button and its presets, a typed snooze length, the card's Disable button, and starting a snooze through the `dictationNudgeSnooze` URL or console helper.
+
+**What is not gated:** ending a snooze, turning the tool back on, Keep typing, the limit (including Never), `dictationNudgeDisable()` in the console, and the Math to snooze setting itself, which you can turn down or off in two clicks. This is friction for a reflex. It is not a lock, and it does not try to be one.
+
+**Giving up** is always allowed: Never mind returns to the card, and Esc closes it. Either way nothing is snoozed. A new nudge card also replaces an unfinished challenge.
+
+**Typing the answer is free.** While a problem is showing, digits and the other answer keys do not spend allowance, so solving the problem cannot itself trigger the lockdown. Letters still count, wherever you type them, so leaving a problem on screen does not switch the meter off.
 
 ## Tests
 
 ```bash
 brew install lua@5.4
 "$(brew --prefix lua@5.4)/bin/lua" tests/run.lua
-# 47 tests, 47 passed, 0 failed
+# 68 tests, 68 passed, 0 failed
 ```
 
 The suite needs only Lua 5.4, the version Hammerspoon embeds, and I have not run it on any other. Homebrew's `lua@5.4` is not put on your `PATH`, hence the full path above; if your own `lua` is already 5.4, `lua tests/run.lua` is enough. It loads the real module against `tests/hs_stub.lua`, a stand-in for the Hammerspoon API with a fake clock, and drives the real event-tap callback. It never creates or posts a key event.
 
-What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card.
+What it covers: the allowance arithmetic, when each tier fires, the cooldown, the lockdown swallowing keys and ending on Esc or on time (including when drawing the overlay fails or its timer never fires), the key filters, the reset chord, snooze, disable, saved preferences, config validation, and malformed messages from the card. For the snooze gate: that nothing is snoozed or disabled until every problem is answered, what is and is not gated, and that answer keys spend nothing. The typed snooze lengths are checked against a table of accepted and refused inputs. The money-math bank is checked two ways: one hand-worked case per kind of problem, and a walk over every problem the bank can produce (several hundred) that requires a positive whole-number answer.
 
 It also checks the claims in [What it reads from your keyboard](#what-it-reads-from-your-keyboard):
 
 - The fake key event raises an error if the module calls anything other than the type, keycode, flags, or autorepeat accessors.
 - A run of varied typing through both tiers must produce exactly three fixed log lines, in order (nudge fired, lockdown began, lockdown ended), no settings writes, and no opened URLs.
-- Only the two preference keys are ever written, with the values that were set.
+- Only the three preference keys are ever written, with the values that were set.
+- An answer typed into a snooze-gate problem produces no log line and no settings write, and is never sent back to the card.
 - The card's HTML is scanned for anything that would load from outside, and the source for character, network, file, shell, clipboard, and dynamic-code APIs.
 
 The last check is a text scan. It guards against the obvious regressions; it is not a proof, and it is no substitute for reading the file.
 
-What it does not cover: anything that needs the real Hammerspoon. The card's HTML and JavaScript (including the duration parser), the menubar item's appearance, the overlay on real displays, and the permission prompts are checked by hand.
+What it does not cover: anything that needs the real Hammerspoon. The card's HTML and JavaScript (including the limit field's duration parser, the gear, and how a problem is displayed), the menubar item's appearance, the overlay on real displays, and the permission prompts are checked by hand.
 
 ## Limitations
 
@@ -211,7 +239,7 @@ What it does not cover: anything that needs the real Hammerspoon. The card's HTM
 - **The tap is global.** The module does not know which app or field you are typing in. It cannot exempt a code editor or a terminal; use snooze or the reset chord for that.
 - **The lockdown blocks key presses, nothing else**, and not in secure-input fields (see above). A note in the code says the overlay may not draw over an app in its own full-screen Space. I have not verified this either way. If it happens, keys are still blocked for the 15 seconds and Esc still ends it.
 - **The block lives in Hammerspoon's event tap.** Quitting or reloading Hammerspoon removes it.
-- **The URL events are open to anything on your machine.** Any local app, or a web page after your browser asks for confirmation, can open a `hammerspoon://` URL. For this module that means opening the card, toggling snooze, or previewing the nudge (with its sound). No URL starts or arms the lockdown, changes the limit, or returns any information.
+- **The URL events are open to anything on your machine.** Any local app, or a web page after your browser asks for confirmation, can open a `hammerspoon://` URL. For this module that means opening the card, toggling snooze, or previewing the nudge (with its sound). No URL starts or arms the lockdown, changes the limit, or returns any information. With the snooze gate on, the snooze URL cannot start a snooze by itself; it opens the card on a problem.
 - **The menubar item can be hidden by macOS or a menubar manager.** If you do not see it, check that Hammerspoon is allowed in the menubar in System Settings.
 
 ## Not affiliated
